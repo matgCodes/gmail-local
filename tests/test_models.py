@@ -286,8 +286,8 @@ def test_cleanup_plan_validation_boundaries():
     with pytest.raises(CleanupPlanValidationError, match="CRLF"):
         CleanupPlan(query="test", action_type=CleanupAction.ADD_LABEL, targets=[t_crlf_lbl]).validate()
 
-    # Exceeding batch ceiling (50)
-    targets_51 = [
+    # Exceeding batch ceiling (75)
+    targets_76 = [
         CleanupTarget(
             message_id=f"msg_{i}",
             thread_id=f"th_{i}",
@@ -296,10 +296,10 @@ def test_cleanup_plan_validation_boundaries():
             date="2026-09-01",
             action=CleanupAction.TRASH,
         )
-        for i in range(51)
+        for i in range(76)
     ]
-    with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 50"):
-        CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=targets_51).validate()
+    with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 75"):
+        CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=targets_76).validate()
 
 
 def test_cleanup_plan_serialization_roundtrip_and_handoff():

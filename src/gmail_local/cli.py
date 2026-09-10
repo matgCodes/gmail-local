@@ -641,7 +641,7 @@ def cmd_triage_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         plans = generator.generate_staged_plans(
             decisions=decisions,
             action_filter=target_action,
-            max_batch_size=50,
+            max_batch_size=MAX_CLEANUP_BATCH_SIZE,
             query=args.query,
         )
 
@@ -654,7 +654,7 @@ def cmd_triage_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         print("=" * 78)
         total_targets = sum(len(p.targets) for p in plans)
         print(f"Target Action:  {target_action.value.upper()}")
-        print(f"Total Targets:  {total_targets} across {len(plans)} bundle(s) (<= 50 items/bundle)")
+        print(f"Total Targets:  {total_targets} across {len(plans)} bundle(s) (<= {MAX_CLEANUP_BATCH_SIZE} items/bundle)")
         print("-" * 78)
 
         for idx, plan in enumerate(plans, 1):
@@ -1061,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cl_plan.add_argument("--add-label", nargs="*", default=[], help="Labels to apply")
     p_cl_plan.add_argument("--remove-label", nargs="*", default=[], help="Labels to remove")
-    p_cl_plan.add_argument("--limit", type=int, default=10, help="Max candidate messages (1-50)")
+    p_cl_plan.add_argument("--limit", type=int, default=10, help=f"Max candidate messages (1-{MAX_CLEANUP_BATCH_SIZE})")
     p_cl_plan.add_argument("--purpose", default="cleanup_plan", help="Operator-stated purpose for audit log")
     p_cl_plan.set_defaults(func=cmd_cleanup_plan)
 
@@ -1088,14 +1088,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_tr_scan = p_triage_sub.add_parser("scan", help="Scan candidates and display categorized triage breakdown")
     p_tr_scan.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
-    p_tr_scan.add_argument("--limit", type=int, default=25, help="Candidates to inspect (1-75)")
+    p_tr_scan.add_argument("--limit", type=int, default=25, help=f"Candidates to inspect (1-{MAX_CLEANUP_BATCH_SIZE})")
     p_tr_scan.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
     p_tr_scan.add_argument("--purpose", default="triage_scan", help="Operator-stated purpose for audit log")
     p_tr_scan.set_defaults(func=cmd_triage_scan)
 
     p_tr_plan = p_triage_sub.add_parser("plan", help="Scan candidates and generate partitioned CleanupPlan artifacts")
     p_tr_plan.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
-    p_tr_plan.add_argument("--limit", type=int, default=50, help="Candidates to inspect (1-75)")
+    p_tr_plan.add_argument("--limit", type=int, default=MAX_CLEANUP_BATCH_SIZE, help=f"Candidates to inspect (1-{MAX_CLEANUP_BATCH_SIZE})")
     p_tr_plan.add_argument("--action", choices=["trash", "archive"], default="trash", help="Target action to stage into plans")
     p_tr_plan.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
     p_tr_plan.add_argument("--purpose", default="triage_plan", help="Operator-stated purpose for audit log")

@@ -142,11 +142,11 @@ def test_promotions_yield_trash():
     assert dec.action == TriageAction.TRASH
 
 
-def test_plan_generator_partitions_at_50_limit(tmp_path):
-    """Batch Boundary Invariant: Staged plans must never exceed 50 targets per plan."""
+def test_plan_generator_partitions_at_75_limit(tmp_path):
+    """Batch Boundary Invariant: Staged plans must never exceed 75 targets per plan (ADR 0013)."""
     classifier = TriageClassifier()
     decisions = []
-    for i in range(120):
+    for i in range(160):
         d = classifier.classify(
             message_id=f"msg-{i}",
             thread_id=f"th-{i}",
@@ -161,13 +161,13 @@ def test_plan_generator_partitions_at_50_limit(tmp_path):
     plans = generator.generate_staged_plans(
         decisions=decisions,
         action_filter=TriageAction.TRASH,
-        max_batch_size=50,
+        max_batch_size=75,
     )
 
     assert len(plans) == 3
-    assert len(plans[0].targets) == 50
-    assert len(plans[1].targets) == 50
-    assert len(plans[2].targets) == 20
+    assert len(plans[0].targets) == 75
+    assert len(plans[1].targets) == 75
+    assert len(plans[2].targets) == 10
     for p in plans:
         assert p.fingerprint is not None
         assert p.action_type == CleanupAction.TRASH

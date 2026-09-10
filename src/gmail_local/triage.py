@@ -18,7 +18,7 @@ import re
 import email.utils
 from typing import Any, Dict, List, Optional, Tuple
 
-from gmail_local.config import CONFIG_DIR, PLANS_DIR, STATE_DIR
+from gmail_local.config import CONFIG_DIR, MAX_CLEANUP_BATCH_SIZE, PLANS_DIR, STATE_DIR
 from gmail_local.models import (
     CandidateMessage,
     CleanupAction,
@@ -716,11 +716,11 @@ class TriagePlanGenerator:
         self,
         decisions: List[TriageDecision],
         action_filter: Optional[TriageAction] = None,
-        max_batch_size: int = 50,
+        max_batch_size: int = MAX_CLEANUP_BATCH_SIZE,
         query: str = "triage_scan",
     ) -> List[CleanupPlan]:
-        """Partitions decisions into discrete CleanupPlans of at most max_batch_size (ceiling: 50)."""
-        max_batch = min(max_batch_size, 50)
+        """Partitions decisions into discrete CleanupPlans of at most max_batch_size (ceiling: MAX_CLEANUP_BATCH_SIZE)."""
+        max_batch = min(max_batch_size, MAX_CLEANUP_BATCH_SIZE)
         target_action = action_filter or TriageAction.TRASH
 
         # Filter candidate decisions

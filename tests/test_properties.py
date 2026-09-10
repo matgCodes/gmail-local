@@ -322,11 +322,11 @@ class TestModificationPropertyInvariants:
         assert len(fp1) == 64
 
     @given(
-        st.integers(min_value=51, max_value=120),
+        st.integers(min_value=76, max_value=150),
     )
     @settings(max_examples=20)
     def test_cleanup_batch_ceiling_invariant(self, target_count: int) -> None:
-        """Target count exceeding 50 messages must always raise CleanupPlanValidationError."""
+        """Target count exceeding 75 messages must always raise CleanupPlanValidationError."""
         from gmail_local.models import CleanupAction, CleanupPlan, CleanupPlanValidationError, CleanupTarget
 
         targets = [
@@ -341,7 +341,7 @@ class TestModificationPropertyInvariants:
             for i in range(target_count)
         ]
         plan = CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=targets)
-        with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 50"):
+        with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 75"):
             plan.validate()
 
     @given(

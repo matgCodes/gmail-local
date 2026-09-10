@@ -373,7 +373,7 @@ def test_eval_cleanup_permanent_delete_strictly_blocked():
 
 
 def test_eval_cleanup_forged_batch_size_tamper_rejected(tmp_path: Path):
-    """Eval: Forged plan with >50 targets loaded from disk fails validation before any modification."""
+    """Eval: Forged plan with >75 targets loaded from disk fails validation before any modification."""
     from gmail_local.models import CleanupAction, CleanupPlan, CleanupPlanValidationError, CleanupTarget
     from gmail_local.modifier import GmailModifier
 
@@ -386,12 +386,12 @@ def test_eval_cleanup_forged_batch_size_tamper_rejected(tmp_path: Path):
             date="2026-09-01",
             action=CleanupAction.TRASH,
         )
-        for i in range(55)
+        for i in range(80)
     ]
     forged_plan = CleanupPlan(query="all", action_type=CleanupAction.TRASH, targets=targets)
     modifier = GmailModifier(service=MagicMock())
 
-    with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 50"):
+    with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 75"):
         modifier.apply_plan(forged_plan, confirm=True)
 
 
