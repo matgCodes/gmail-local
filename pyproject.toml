@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gmail-local"
+version = "0.1.0"
+description = "Locally operated, read-only Gmail integration with least-privilege security bounds"
+readme = "WAYFINDER_GMAIL_API_READ_ACCESS.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.23.0",
+    "google-auth-oauthlib>=1.1.0",
+    "google-auth-httplib2>=0.1.1",
+    "keyring>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-mock>=3.12.0",
+    "hypothesis>=6.100.0",
+    "mutmut>=3.0.0",
+    "pytest-bdd>=8.0.0",
+]
+
+[project.scripts]
+gmail-local = "gmail_local.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "evals"]
+pythonpath = ["src"]
+markers = [
+    "unit: Fast in-memory unit tests",
+    "integration: Component integration and filesystem tests",
+    "boundaries: Exact threshold boundary condition tests (N-1, N, N+1)",
+    "adversarial: Security injection and adversarial exploit benchmarks",
+    "contract: Non-negotiable boundary contracts and zero-secret guarantees",
+    "e2e: Out-of-process subprocess CLI end-to-end tests",
+    "property: Hypothesis property-based generative invariant tests",
+    "acceptance: User-visible Gherkin acceptance workflow tests",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:gherkin",
+]
+
+[tool.mutmut]
+source_paths = ["src/gmail_local/rate_limiter.py"]
+also_copy = ["src", "pyproject.toml"]
+pytest_add_cli_args = ["tests/test_rate_limiter.py", "tests/test_boundaries.py"]

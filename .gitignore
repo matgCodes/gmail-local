@@ -1,0 +1,35 @@
+# OAuth client configuration & secrets (MUST NEVER BE COMMITTED)
+client_secret*.json
+credentials.json
+token.json
+*.token
+
+# Python runtime & environments
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.hypothesis/
+mutants/
+.mutmut-cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+.obsidian/
+
+# Local state & logs
+audit.log
+*.log
+.state/
+staging/
+downloads/
+
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride

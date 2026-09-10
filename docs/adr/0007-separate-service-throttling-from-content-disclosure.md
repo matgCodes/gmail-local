@@ -1,0 +1,3 @@
+# Separate Gmail service throttling from content disclosure
+
+Google quota headroom is not content authority, so the Retrieval Milestone uses two independent boundaries: a 3,000-unit rolling 60-second budget with at most four in-flight requests and finite retry behavior protects the Gmail service, while each Operator-authorized read permits at most ten selected full-message calls and 1 MiB of aggregate decoded-body disclosure. Selected bodies remain whole and ordered, attachments stay separately gated, and a body whose exact decoded size is learned only after local retrieval is discarded rather than exposed when it would cross the disclosure allowance; this accepts a small local-processing cost to prevent service capacity from silently expanding private-content exposure.
