@@ -68,7 +68,8 @@ flowchart TD
 - [x] Generated live markdown feed: [`/Users/mag_station/Documents/Job Search/INBOX/GovernmentJobs_Live_Feed_2026-09-10.md`](file:///Users/mag_station/Documents/Job%20Search/INBOX/GovernmentJobs_Live_Feed_2026-09-10.md).
 - [x] Generated structured data feed: [`/Users/mag_station/Documents/Job Search/INBOX/governmentjobs_feed.json`](file:///Users/mag_station/Documents/Job%20Search/INBOX/governmentjobs_feed.json).
 - [x] Implemented production `src/gmail_local/triage.py` engine and CLI subcommands (`scan`, `plan`, `clusters`, `policy`).
-- [x] Interactive policy calibration completed and saved to `~/.config/gmail-local/triage_policy.json` with strict operator whitelists (Home Depot, Ralphs, GasBuddy, The Athletic, Lennar/Lennox, Streamable, Linux Foundation).
-- [x] Staged first promotional soft-deletion plan (`3127b59b249fe5a50cf522a276801a488a0a09126bcaf69c55985eb869b1df0b.json`) for Operator review under Manual Modify Gate.
-- [ ] Operator review and execution of staged deletion plans.
+- [x] Interactive policy calibration completed and saved to `~/.config/gmail-local/triage_policy.json` with strict operator whitelists (Home Depot, Ralphs, GasBuddy, The Athletic, Lennar/Lennox, Streamable, Linux Foundation, Chuck E Cheese).
+- [x] Implemented ADR 0013 expanding batch ceiling to 75 targets and added paginated cluster discovery up to 500 candidates.
+- [x] Executed 4 staged deletion batches (234 total promotional messages moved to Trash via Manual Modify Gate with zero false positives).
+- [ ] Continue scaling autonomous AFK triage pipeline across historical and active promotional backlogs.
 
