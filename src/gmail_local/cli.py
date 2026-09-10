@@ -558,6 +558,7 @@ def cmd_triage_scan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
                 sender=c.sender,
                 subject=c.subject,
                 date=c.date,
+                labels=list(c.labels),
             )
             decisions.append(decision)
 
@@ -653,6 +654,7 @@ def cmd_triage_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
                 sender=c.sender,
                 subject=c.subject,
                 date=c.date,
+                labels=list(c.labels),
             )
             decisions.append(decision)
 
@@ -789,12 +791,11 @@ def cmd_triage_loop(retriever: GmailRetriever, args: argparse.Namespace) -> int:
 
     while total_processed < max_total:
         iteration += 1
-        current_limit = min(batch_size, max_total - total_processed)
 
         # Retrieve candidates
         candidates = retriever.search_messages(
             query=args.query,
-            max_results=current_limit,
+            max_results=batch_size,
             purpose=f"{args.purpose}_iter_{iteration}",
         )
         if not candidates:
@@ -810,6 +811,7 @@ def cmd_triage_loop(retriever: GmailRetriever, args: argparse.Namespace) -> int:
                 sender=c.sender,
                 subject=c.subject,
                 date=c.date,
+                labels=list(c.labels),
             )
             decisions.append(d)
 
@@ -827,6 +829,14 @@ def cmd_triage_loop(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         if not plans:
             print(f"\n[Iteration {iteration}] All {len(candidates)} candidates in slice are protected/kept. Halting loop to prevent spinning.")
             break
+
+        # Bound by remaining max_total quota
+        remaining = max_total - total_processed
+        all_targets = [t for p in plans for t in p.targets]
+        if len(all_targets) > remaining:
+            all_targets = all_targets[:remaining]
+            from gmail_local.modifier import CleanupPlan
+            plans = [CleanupPlan(query=args.query, action_type=plans[0].action_type, targets=all_targets)]
 
         batch_targets = sum(len(p.targets) for p in plans)
         for p in plans:

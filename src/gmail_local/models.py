@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,7 @@ class CandidateMessage:
     recipient: str
     subject: str
     preview: Optional[str] = None  # Populated only if Message Preview explicitly requested
+    labels: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

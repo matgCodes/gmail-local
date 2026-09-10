@@ -128,6 +128,7 @@ class GmailRetriever:
                 recipient=decode_rfc2047_header(headers.get("to", "")),
                 subject=decode_rfc2047_header(headers.get("subject", "(No Subject)")),
                 preview=None,
+                labels=tuple(meta_resp.get("labelIds", [])),
             )
             candidates.append(candidate)
 
@@ -198,6 +199,7 @@ class GmailRetriever:
                     recipient=decode_rfc2047_header(headers.get("to", "")),
                     subject=decode_rfc2047_header(headers.get("subject", "(No Subject)")),
                     preview=None,
+                    labels=tuple(meta_resp.get("labelIds", [])),
                 )
                 candidates.append(candidate)
                 if len(candidates) >= total_limit:
@@ -258,6 +260,7 @@ class GmailRetriever:
                     recipient=decode_rfc2047_header(headers.get("to", "")),
                     subject=decode_rfc2047_header(headers.get("subject", "(No Subject)")),
                     preview=snippet,
+                    labels=tuple(meta_resp.get("labelIds", [])),
                 )
             )
 

@@ -229,8 +229,8 @@ class TriagePolicy:
 
     # Compiled regex patterns for protected categories (Zero False-Positive Target)
     financial_patterns: List[re.Pattern] = field(default_factory=lambda: [
-        re.compile(r"\b(account statement|checking balance|tax form|1099|w-2|irs|tax return|portfolio|dividend|brokerage)\b", re.I),
-        re.compile(r"@(chase|wellsfargo|fidelity|vanguard|americanexpress|citi|bankofamerica|capitalone)\.com", re.I),
+        re.compile(r"\b(account statement|checking balance|rewards summary|statements?|tax form|1099|w-2|irs|tax return|portfolio|dividend|brokerage)\b", re.I),
+        re.compile(r"@(.*\.)?(chase|wellsfargo|mywellsfargorewards|fidelity|vanguard|americanexpress|citi|bankofamerica|capitalone)\.com", re.I),
     ])
 
     transaction_patterns: List[re.Pattern] = field(default_factory=lambda: [
