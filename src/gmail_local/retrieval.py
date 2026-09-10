@@ -141,6 +141,82 @@ class GmailRetriever:
         )
         return candidates
 
+    def search_candidates_paginated(
+        self,
+        query: str,
+        total_limit: int = 150,
+        purpose: str = "triage_clusters",
+    ) -> List[CandidateMessage]:
+        """Paginated message search across multiple bounded windows for clustering and discovery."""
+        if total_limit < 1 or total_limit > 500:
+            raise RetrievalBoundError(
+                f"total_limit must be between 1 and 500 (got {total_limit})."
+            )
+
+        service = self._get_service()
+        candidates: List[CandidateMessage] = []
+        next_page_token = None
+
+        while len(candidates) < total_limit:
+            batch_size = min(MAX_SEARCH_BOUND, total_limit - len(candidates))
+
+            def _list_call():
+                kwargs = {"userId": "me", "q": query, "maxResults": batch_size}
+                if next_page_token:
+                    kwargs["pageToken"] = next_page_token
+                return service.users().messages().list(**kwargs).execute()
+
+            list_resp = self.limiter.execute_with_retry("users.messages.list", _list_call, wait_for_quota=True)
+            msg_items = list_resp.get("messages", [])
+            if not msg_items:
+                break
+
+            for item in msg_items:
+                msg_id = item["id"]
+
+                def _get_meta():
+                    return (
+                        service.users()
+                        .messages()
+                        .get(
+                            userId="me",
+                            id=msg_id,
+                            format="metadata",
+                            metadataHeaders=["Date", "From", "To", "Subject"],
+                        )
+                        .execute()
+                    )
+
+                meta_resp = self.limiter.execute_with_retry("users.messages.get", _get_meta, wait_for_quota=True)
+                headers = extract_header_map(meta_resp.get("payload"))
+
+                candidate = CandidateMessage(
+                    id=msg_id,
+                    thread_id=meta_resp.get("threadId", ""),
+                    date=decode_rfc2047_header(headers.get("date", "")),
+                    sender=decode_rfc2047_header(headers.get("from", "")),
+                    recipient=decode_rfc2047_header(headers.get("to", "")),
+                    subject=decode_rfc2047_header(headers.get("subject", "(No Subject)")),
+                    preview=None,
+                )
+                candidates.append(candidate)
+                if len(candidates) >= total_limit:
+                    break
+
+            next_page_token = list_resp.get("nextPageToken")
+            if not next_page_token:
+                break
+
+        self.audit.record(
+            AuditEntry(
+                operation="search_candidates_paginated",
+                purpose=purpose,
+                status="SUCCESS",
+                details=f"query='{query}' count={len(candidates)} total_limit={total_limit}",
+            )
+        )
+        return candidates
+
     def preview_candidates(
         self,
         candidate_ids: List[str],

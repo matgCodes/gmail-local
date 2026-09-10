@@ -65,23 +65,34 @@ class RateLimiter:
             self._purge_expired(t)
             return sum(units for _, units in self._history)
 
-    def acquire_quota(self, method_name: str, now: Optional[float] = None) -> int:
+    def acquire_quota(
+        self,
+        method_name: str,
+        now: Optional[float] = None,
+        wait_if_full: bool = False,
+        sleep_fn: Callable[[float], None] = time.sleep,
+    ) -> int:
         """Check and acquire quota units for a method.
 
-        Raises RateLimitExceededError if budget is exhausted.
+        If wait_if_full is True, sleeps until quota replenishes instead of raising.
+        Raises RateLimitExceededError if budget is exhausted and wait_if_full is False.
         """
         cost = METHOD_QUOTA_COSTS.get(method_name, 20)
-        with self._lock:
-            t = now if now is not None else time.time()
-            self._purge_expired(t)
-            current = sum(units for _, units in self._history)
-            if current + cost > self.max_units:
-                raise RateLimitExceededError(
-                    f"Rolling 60s budget exceeded: requested {cost} units, "
-                    f"currently at {current}/{self.max_units} units."
-                )
-            self._history.append((t, cost))
-        return cost
+        while True:
+            with self._lock:
+                t = now if now is not None else time.time()
+                self._purge_expired(t)
+                current = sum(units for _, units in self._history)
+                if current + cost <= self.max_units:
+                    self._history.append((t, cost))
+                    return cost
+                if not wait_if_full:
+                    raise RateLimitExceededError(
+                        f"Rolling 60s budget exceeded: requested {cost} units, "
+                        f"currently at {current}/{self.max_units} units."
+                    )
+                wait_sec = max(0.5, (self._history[0][0] + self.window_secs) - t + 0.1)
+            sleep_fn(wait_sec)
 
     def is_retryable_error(self, err: Exception) -> bool:
         """Classify if an error is eligible for exponential backoff retries."""
@@ -101,6 +112,7 @@ class RateLimiter:
         method_name: str,
         operation: Callable[[], T],
         sleep_fn: Callable[[float], None] = time.sleep,
+        wait_for_quota: bool = False,
     ) -> T:
         """Executes operation with quota tracking, concurrency cap, and jittered retries."""
         self._semaphore.acquire()
@@ -110,7 +122,7 @@ class RateLimiter:
 
             while True:
                 # Acquire quota units before making call
-                self.acquire_quota(method_name)
+                self.acquire_quota(method_name, wait_if_full=wait_for_quota, sleep_fn=sleep_fn)
                 try:
                     return operation()
                 except Exception as err:

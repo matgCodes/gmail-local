@@ -13,7 +13,13 @@ from gmail_local.composer import (
     load_draft_locally,
     save_draft_locally,
 )
-from gmail_local.config import DEFAULT_SEARCH_BOUND, DRAFTS_DIR, MAX_CLEANUP_BATCH_SIZE, PLANS_DIR
+from gmail_local.config import (
+    DEFAULT_SEARCH_BOUND,
+    DRAFTS_DIR,
+    MAX_CLEANUP_BATCH_SIZE,
+    MAX_SEARCH_BOUND,
+    PLANS_DIR,
+)
 from gmail_local.models import (
     CleanupAction,
     CleanupPlan,
@@ -525,11 +531,18 @@ def cmd_cleanup(retriever: GmailRetriever, args: argparse.Namespace) -> int:
 def cmd_triage_scan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     """Scan candidate messages, classify via triage policy, and display categorized breakdown."""
     try:
-        candidates = retriever.search_messages(
-            query=args.query,
-            max_results=args.limit,
-            purpose=args.purpose,
-        )
+        if args.limit > MAX_SEARCH_BOUND:
+            candidates = retriever.search_candidates_paginated(
+                query=args.query,
+                total_limit=args.limit,
+                purpose=args.purpose,
+            )
+        else:
+            candidates = retriever.search_messages(
+                query=args.query,
+                max_results=args.limit,
+                purpose=args.purpose,
+            )
         if not candidates:
             print(f"No messages matched triage query: '{args.query}'")
             return 0
@@ -690,11 +703,18 @@ def cmd_triage_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
 def cmd_triage_clusters(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     """Analyze domain volume and clustering distribution for candidates."""
     try:
-        candidates = retriever.search_messages(
-            query=args.query,
-            max_results=args.limit,
-            purpose=args.purpose,
-        )
+        if args.limit > MAX_SEARCH_BOUND:
+            candidates = retriever.search_candidates_paginated(
+                query=args.query,
+                total_limit=args.limit,
+                purpose=args.purpose,
+            )
+        else:
+            candidates = retriever.search_messages(
+                query=args.query,
+                max_results=args.limit,
+                purpose=args.purpose,
+            )
         if not candidates:
             print(f"No messages matched query: '{args.query}'")
             return 0
@@ -1088,7 +1108,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_tr_scan = p_triage_sub.add_parser("scan", help="Scan candidates and display categorized triage breakdown")
     p_tr_scan.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
-    p_tr_scan.add_argument("--limit", type=int, default=25, help=f"Candidates to inspect (1-{MAX_CLEANUP_BATCH_SIZE})")
+    p_tr_scan.add_argument("--limit", type=int, default=75, help="Candidates to inspect (1-500)")
     p_tr_scan.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
     p_tr_scan.add_argument("--purpose", default="triage_scan", help="Operator-stated purpose for audit log")
     p_tr_scan.set_defaults(func=cmd_triage_scan)
@@ -1103,7 +1123,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_tr_clusters = p_triage_sub.add_parser("clusters", help="Analyze domain volume and clustering distribution")
     p_tr_clusters.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
-    p_tr_clusters.add_argument("--limit", type=int, default=50, help="Candidates to inspect (1-75)")
+    p_tr_clusters.add_argument("--limit", type=int, default=150, help="Candidates to inspect (1-500)")
     p_tr_clusters.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
     p_tr_clusters.add_argument("--purpose", default="triage_clusters", help="Operator-stated purpose for audit log")
     p_tr_clusters.set_defaults(func=cmd_triage_clusters)
