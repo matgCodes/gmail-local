@@ -94,7 +94,7 @@ class GmailRetriever:
                 .execute()
             )
 
-        list_resp = self.limiter.execute_with_retry("users.messages.list", _list_call)
+        list_resp = self.limiter.execute_with_retry("users.messages.list", _list_call, wait_for_quota=True)
         msg_items = list_resp.get("messages", [])[:max_results]
 
         candidates: List[CandidateMessage] = []
@@ -116,7 +116,7 @@ class GmailRetriever:
                     .execute()
                 )
 
-            meta_resp = self.limiter.execute_with_retry("users.messages.get", _get_meta)
+            meta_resp = self.limiter.execute_with_retry("users.messages.get", _get_meta, wait_for_quota=True)
 
             headers = extract_header_map(meta_resp.get("payload"))
 

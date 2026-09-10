@@ -233,7 +233,7 @@ class GmailModifier:
                 def _trash_call(msg_id=target.message_id):
                     return service.users().messages().trash(userId="me", id=msg_id).execute()
 
-                self.rate_limiter.execute_with_retry("users.messages.trash", _trash_call)
+                self.rate_limiter.execute_with_retry("users.messages.trash", _trash_call, wait_for_quota=True)
                 self.audit_logger.record(
                     AuditEntry(
                         operation="trash",
@@ -250,16 +250,15 @@ class GmailModifier:
                 CleanupAction.ADD_LABEL,
                 CleanupAction.REMOVE_LABEL,
             ):
-                body: Dict[str, Any] = {}
-                if target.add_labels:
-                    body["addLabelIds"] = target.add_labels
-                if target.remove_labels:
-                    body["removeLabelIds"] = target.remove_labels
+                def _modify_call(msg_id=target.message_id, adds=target.add_labels, rems=target.remove_labels):
+                    body: Dict[str, Any] = {}
+                    if adds:
+                        body["addLabelIds"] = adds
+                    if rems:
+                        body["removeLabelIds"] = rems
+                    return service.users().messages().modify(userId="me", id=msg_id, body=body).execute()
 
-                def _modify_call(msg_id=target.message_id, b=body):
-                    return service.users().messages().modify(userId="me", id=msg_id, body=b).execute()
-
-                self.rate_limiter.execute_with_retry("users.messages.modify", _modify_call)
+                self.rate_limiter.execute_with_retry("users.messages.modify", _modify_call, wait_for_quota=True)
                 op_name = target.action.value
                 self.audit_logger.record(
                     AuditEntry(
