@@ -32,11 +32,15 @@ from gmail_local.modifier import (
 from gmail_local.retrieval import GmailRetriever, RetrievalBoundError
 from gmail_local.sender import GmailSender
 from gmail_local.triage import (
+    DEFAULT_POLICY_FILE,
     TriageAction,
     TriageCategory,
     TriageClassifier,
     TriageDecision,
+    TriageManifest,
     TriagePlanGenerator,
+    TriagePolicy,
+    TriageScanner,
 )
 
 
@@ -530,7 +534,9 @@ def cmd_triage_scan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
             print(f"No messages matched triage query: '{args.query}'")
             return 0
 
-        classifier = TriageClassifier()
+        policy_path = getattr(args, "policy", None)
+        policy = TriagePolicy.load(policy_path)
+        classifier = TriageClassifier(policy=policy)
         decisions: List[TriageDecision] = []
         for c in candidates:
             decision = classifier.classify(
@@ -550,16 +556,26 @@ def cmd_triage_scan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
             cat_name = d.category.value
             category_counts[cat_name] = category_counts.get(cat_name, 0) + 1
 
+        scanner = TriageScanner(classifier)
+        clusters = scanner.cluster_candidates(candidates)
+
         print("=" * 78)
         print("  INBOX TRIAGE POLICY SCAN BREAKDOWN")
         print("=" * 78)
         print(f"Query:           {args.query}")
+        print(f"Policy:          {policy.name}")
         print(f"Scanned:         {len(decisions)} messages")
         print(f"Action Summary:  TRASH: {action_counts[TriageAction.TRASH]} | ARCHIVE: {action_counts[TriageAction.ARCHIVE]} | KEEP/PROTECT: {action_counts[TriageAction.KEEP]}")
         print("-" * 78)
         print("Category Distribution:")
         for cat, cnt in sorted(category_counts.items(), key=lambda x: x[1], reverse=True):
             print(f"  - {cat:25s}: {cnt:3d} messages")
+        print("-" * 78)
+
+        print("Top Domain Clusters:")
+        for cl in clusters[:5]:
+            act_badge = f"[{cl.recommended_action.value.upper()}]"
+            print(f"  {act_badge:9s} {cl.domain:30s}: {cl.message_count:3d} msgs")
         print("-" * 78)
 
         print("Detailed Candidate Decisions:")
@@ -572,7 +588,21 @@ def cmd_triage_scan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
             print(f"     Reason:  {d.reason} (rule: {d.rule_name})")
             print("-" * 78)
 
-        print("AFK Triage scan complete. To generate staged execution plans, run:")
+        # Save manifest
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        manifest = TriageManifest(
+            run_id=run_id,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            query=args.query,
+            total_scanned=len(decisions),
+            action_counts={k.value: v for k, v in action_counts.items()},
+            category_counts=category_counts,
+            top_clusters=[c.to_dict() for c in clusters[:10]],
+        )
+        manifest_path = manifest.save()
+
+        print(f"Triage manifest saved: {manifest_path}")
+        print("To generate staged execution plans, run:")
         print(f"  gmail-local triage plan --query \"{args.query}\" --limit {args.limit} --action trash")
         return 0
     except Exception as e:
@@ -592,7 +622,9 @@ def cmd_triage_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
             print(f"No messages matched triage query: '{args.query}'")
             return 0
 
-        classifier = TriageClassifier()
+        policy_path = getattr(args, "policy", None)
+        policy = TriagePolicy.load(policy_path)
+        classifier = TriageClassifier(policy=policy)
         decisions: List[TriageDecision] = []
         for c in candidates:
             decision = classifier.classify(
@@ -634,11 +666,112 @@ def cmd_triage_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
             print(f"  Apply:       gmail-local cleanup apply --plan {plan.fingerprint} --confirm")
             print("-" * 78)
 
+        # Save manifest
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        manifest = TriageManifest(
+            run_id=run_id,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            query=args.query,
+            total_scanned=len(decisions),
+            action_counts={args.action: total_targets},
+            category_counts={},
+            top_clusters=[],
+            staged_plan_fingerprints=[p.fingerprint for p in plans],
+        )
+        manifest.save()
+
         print("All plans staged safely. Execute via Manual Modify Gate when ready.")
         return 0
     except Exception as e:
         print(f"Triage plan generation failed with error: {e}", file=sys.stderr)
         return 1
+
+
+def cmd_triage_clusters(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Analyze domain volume and clustering distribution for candidates."""
+    try:
+        candidates = retriever.search_messages(
+            query=args.query,
+            max_results=args.limit,
+            purpose=args.purpose,
+        )
+        if not candidates:
+            print(f"No messages matched query: '{args.query}'")
+            return 0
+
+        policy_path = getattr(args, "policy", None)
+        policy = TriagePolicy.load(policy_path)
+        classifier = TriageClassifier(policy=policy)
+        scanner = TriageScanner(classifier)
+        clusters = scanner.cluster_candidates(candidates)
+
+        print("=" * 78)
+        print("  INBOX SENDER DOMAIN CLUSTERS & VOLUME BREAKDOWN")
+        print("=" * 78)
+        print(f"Query:        {args.query}")
+        print(f"Scanned:      {len(candidates)} candidates")
+        print(f"Clusters:     {len(clusters)} unique sender domains")
+        print("-" * 78)
+
+        for i, cl in enumerate(clusters, 1):
+            act_badge = f"[{cl.recommended_action.value.upper()}]"
+            print(f"[{i:02d}] {act_badge:9s} {cl.domain:32s} Count: {cl.message_count:3d}")
+            print(f"     Category: {cl.category.value}")
+            print(f"     Senders:  {', '.join(cl.sender_addresses[:2])}")
+            if cl.sample_subjects:
+                print(f"     Samples:  \"{cl.sample_subjects[0][:60]}\"")
+            print("-" * 78)
+
+        return 0
+    except Exception as e:
+        print(f"Clustering analysis failed with error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_triage_policy_show(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Displays current active triage policy configuration."""
+    policy_path = getattr(args, "policy", None)
+    policy = TriagePolicy.load(policy_path)
+    print("=" * 78)
+    print(f"  TRIAGE POLICY CONFIGURATION: {policy.name}")
+    print("=" * 78)
+    print(f"Whitelist Senders ({len(policy.whitelist_senders)}):")
+    for s in policy.whitelist_senders or ["(none)"]:
+        print(f"  + {s}")
+    print(f"\nBlacklist Senders ({len(policy.blacklist_senders)}):")
+    for s in policy.blacklist_senders or ["(none)"]:
+        print(f"  - {s}")
+    print(f"\nArchive Senders ({len(policy.archive_senders)}):")
+    for s in policy.archive_senders or ["(none)"]:
+        print(f"  ~ {s}")
+    print(f"\nCustom Promo Keywords ({len(policy.custom_promo_keywords)}):")
+    for kw in policy.custom_promo_keywords or ["(none)"]:
+        print(f"  * {kw}")
+    print(f"\nCustom Protect Keywords ({len(policy.custom_protect_keywords)}):")
+    for kw in policy.custom_protect_keywords or ["(none)"]:
+        print(f"  * {kw}")
+    print("-" * 78)
+    return 0
+
+
+def cmd_triage_policy_init(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Initializes a starter triage_policy.json file."""
+    path = getattr(args, "path", None) or DEFAULT_POLICY_FILE
+    if path.exists() and not getattr(args, "force", False):
+        print(f"Policy file already exists at {path}. Use --force to overwrite.", file=sys.stderr)
+        return 1
+
+    sample_policy = TriagePolicy(
+        name="operator_custom_policy",
+        whitelist_senders=["important.client.com", "family.org"],
+        blacklist_senders=["spammybrand.com", "junkdeals.net"],
+        archive_senders=["e1.theathletic.com", "apnews.com"],
+        custom_promo_keywords=["special vip offer", "exclusive savings"],
+        custom_protect_keywords=["mortgage", "escrow"],
+    )
+    saved_path = sample_policy.save(path)
+    print(f"Successfully initialized starter triage policy at: {saved_path}")
+    return 0
 
 
 def cmd_triage(retriever: GmailRetriever, args: argparse.Namespace) -> int:
@@ -648,8 +781,19 @@ def cmd_triage(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         return cmd_triage_scan(retriever, args)
     elif sub == "plan":
         return cmd_triage_plan(retriever, args)
+    elif sub == "clusters":
+        return cmd_triage_clusters(retriever, args)
+    elif sub == "policy":
+        policy_sub = getattr(args, "policy_subcommand", None)
+        if policy_sub == "show":
+            return cmd_triage_policy_show(retriever, args)
+        elif policy_sub == "init":
+            return cmd_triage_policy_init(retriever, args)
+        else:
+            print("Specify a policy subcommand: show or init", file=sys.stderr)
+            return 1
     else:
-        print("Specify a triage subcommand: scan or plan", file=sys.stderr)
+        print("Specify a triage subcommand: scan, plan, clusters, or policy", file=sys.stderr)
         return 1
 
 
@@ -945,6 +1089,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_tr_scan = p_triage_sub.add_parser("scan", help="Scan candidates and display categorized triage breakdown")
     p_tr_scan.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
     p_tr_scan.add_argument("--limit", type=int, default=25, help="Candidates to inspect (1-75)")
+    p_tr_scan.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
     p_tr_scan.add_argument("--purpose", default="triage_scan", help="Operator-stated purpose for audit log")
     p_tr_scan.set_defaults(func=cmd_triage_scan)
 
@@ -952,8 +1097,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_tr_plan.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
     p_tr_plan.add_argument("--limit", type=int, default=50, help="Candidates to inspect (1-75)")
     p_tr_plan.add_argument("--action", choices=["trash", "archive"], default="trash", help="Target action to stage into plans")
+    p_tr_plan.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
     p_tr_plan.add_argument("--purpose", default="triage_plan", help="Operator-stated purpose for audit log")
     p_tr_plan.set_defaults(func=cmd_triage_plan)
+
+    p_tr_clusters = p_triage_sub.add_parser("clusters", help="Analyze domain volume and clustering distribution")
+    p_tr_clusters.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
+    p_tr_clusters.add_argument("--limit", type=int, default=50, help="Candidates to inspect (1-75)")
+    p_tr_clusters.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
+    p_tr_clusters.add_argument("--purpose", default="triage_clusters", help="Operator-stated purpose for audit log")
+    p_tr_clusters.set_defaults(func=cmd_triage_clusters)
+
+    p_tr_policy = p_triage_sub.add_parser("policy", help="Inspect or initialize triage policy configuration")
+    p_tr_policy_sub = p_tr_policy.add_subparsers(dest="policy_subcommand")
+
+    p_pol_show = p_tr_policy_sub.add_parser("show", help="Display active policy configuration")
+    p_pol_show.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
+    p_pol_show.set_defaults(func=cmd_triage_policy_show)
+
+    p_pol_init = p_tr_policy_sub.add_parser("init", help="Create starter triage_policy.json file")
+    p_pol_init.add_argument("--path", type=Path, default=None, help="Destination path (default: ~/.config/gmail-local/triage_policy.json)")
+    p_pol_init.add_argument("--force", action="store_true", help="Overwrite existing policy file")
+    p_pol_init.set_defaults(func=cmd_triage_policy_init)
 
     p_triage.set_defaults(func=cmd_triage)
 

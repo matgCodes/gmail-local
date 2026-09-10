@@ -15,16 +15,19 @@ from enum import Enum
 import json
 from pathlib import Path
 import re
+import email.utils
 from typing import Any, Dict, List, Optional, Tuple
 
-from gmail_local.config import PLANS_DIR, STATE_DIR
+from gmail_local.config import CONFIG_DIR, PLANS_DIR, STATE_DIR
 from gmail_local.models import (
+    CandidateMessage,
     CleanupAction,
     CleanupPlan,
     CleanupTarget,
 )
 
 TRIAGE_DIR = STATE_DIR / "triage"
+DEFAULT_POLICY_FILE = CONFIG_DIR / "triage_policy.json"
 
 
 class TriageCategory(str, Enum):
@@ -39,6 +42,9 @@ class TriageCategory(str, Enum):
     NEWSLETTER_DIGEST = "newsletter_digest"
     NOTIFICATION_SOCIAL = "notification_social"
     NOTIFICATION_SYSTEM = "notification_system"
+    OPPORTUNITY_ALERT = "opportunity_alert"
+    OPERATOR_WHITELIST = "operator_whitelist"
+    OPERATOR_BLACKLIST = "operator_blacklist"
     UNCATEGORIZED = "uncategorized"
 
 
@@ -81,9 +87,145 @@ class TriageDecision:
 
 
 @dataclass
+class SenderCluster:
+    """Aggregated volume and triage recommendations for a sender domain cohort."""
+    domain: str
+    message_count: int
+    sender_addresses: List[str]
+    recommended_action: TriageAction
+    category: TriageCategory
+    sample_subjects: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "domain": self.domain,
+            "message_count": self.message_count,
+            "sender_addresses": list(self.sender_addresses),
+            "recommended_action": self.recommended_action.value,
+            "category": self.category.value,
+            "sample_subjects": list(self.sample_subjects),
+        }
+
+
+def extract_sender_domain(sender_str: str) -> str:
+    """Extracts clean domain host from RFC 822 From: header string."""
+    _, addr = email.utils.parseaddr(sender_str)
+    if "@" in addr:
+        return addr.split("@", 1)[1].lower().strip()
+    return "unknown"
+
+
+# Target match keywords based on JOB_SEARCH_RUNBOOK.md
+TIER_1_KEYWORDS = [
+    "analyst", "programmer", "data", "developer", "software", "systems",
+    "specialist", "coordinator", "intern", "internship", "project",
+    "it ", "information technology", "gis", "research", "records",
+    "emergency services", "development specialist", "technical", "engineering",
+    "sustainability", "climate", "broadband", "civic", "reporting", "database"
+]
+
+TIER_2_KEYWORDS = [
+    "inspector", "investigator", "practitioner", "officer", "supervisor",
+    "manager", "planner", "education", "compliance", "technician", "assistant",
+    "examiner", "appraiser", "buyer", "sanitarian"
+]
+
+
+@dataclass(frozen=True)
+class ExtractedJobPosting:
+    """A structured job posting extracted from an alert email."""
+    job_id: str
+    title: str
+    agency: str
+    agency_slug: str
+    url: str
+    date: str
+    email_id: str
+    tier: int = 3
+    match_reason: str = "General Municipal Posting"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "title": self.title,
+            "agency": self.agency,
+            "agency_slug": self.agency_slug,
+            "url": self.url,
+            "date": self.date,
+            "email_id": self.email_id,
+            "tier": self.tier,
+            "match_reason": self.match_reason,
+        }
+
+
+class GovernmentJobsExtractor:
+    """Extracts structured job postings from info@governmentjobs.com notification emails."""
+
+    JOB_PATTERN = re.compile(
+        r"^\s*([^\n]+?)\s+\((https://www\.governmentjobs\.com/careers/([^/]+)/jobs/(\d+)[^\)]*)\)",
+        re.MULTILINE,
+    )
+
+    @classmethod
+    def score_title(cls, title: str) -> Tuple[int, str]:
+        """Scores a job title against Job Search Runbook priority criteria."""
+        t_lower = title.lower()
+        for kw in TIER_1_KEYWORDS:
+            if kw in t_lower:
+                return 1, f"Matched Tier 1 keyword: '{kw}'"
+        for kw in TIER_2_KEYWORDS:
+            if kw in t_lower:
+                return 2, f"Matched Tier 2 keyword: '{kw}'"
+        return 3, "General Public Service Posting"
+
+    @classmethod
+    def extract_from_text(
+        cls, body_text: str, subject: str = "", date_str: str = "", email_id: str = ""
+    ) -> List[ExtractedJobPosting]:
+        """Parses job postings from raw or extracted email body text."""
+        agency = "Government Agency"
+        if subject:
+            agency_match = re.search(r"^(.+?)\s+Job Interest Card Notification", subject)
+            if agency_match:
+                agency = agency_match.group(1).strip()
+
+        jobs: List[ExtractedJobPosting] = []
+        seen_ids = set()
+
+        for title_raw, url, slug, job_id in cls.JOB_PATTERN.findall(body_text):
+            if job_id in seen_ids:
+                continue
+            seen_ids.add(job_id)
+            title = " ".join(title_raw.strip().split())
+            tier, reason = cls.score_title(title)
+            jobs.append(
+                ExtractedJobPosting(
+                    job_id=job_id,
+                    title=title,
+                    agency=agency,
+                    agency_slug=slug,
+                    url=url,
+                    date=date_str,
+                    email_id=email_id,
+                    tier=tier,
+                    match_reason=reason,
+                )
+            )
+        return jobs
+
+
+
+@dataclass
 class TriagePolicy:
     """Rules and pattern definitions governing triage categorization."""
     name: str = "default_safety_policy"
+
+    # Operator overrides
+    whitelist_senders: List[str] = field(default_factory=list)
+    blacklist_senders: List[str] = field(default_factory=list)
+    archive_senders: List[str] = field(default_factory=list)
+    custom_promo_keywords: List[str] = field(default_factory=list)
+    custom_protect_keywords: List[str] = field(default_factory=list)
 
     # Compiled regex patterns for protected categories (Zero False-Positive Target)
     financial_patterns: List[re.Pattern] = field(default_factory=lambda: [
@@ -122,9 +264,58 @@ class TriagePolicy:
         re.compile(r"@(theepochtimes|apnews|e1\.theathletic|response\.cnbc|snacks\.robinhood)\.com", re.I),
     ])
 
+    # Opportunity alerts & job notifications
+    opportunity_patterns: List[re.Pattern] = field(default_factory=lambda: [
+        re.compile(r"info@governmentjobs\.com", re.I),
+        re.compile(r"\b(job interest card notification|job alert)\b", re.I),
+    ])
+
     @classmethod
     def default(cls) -> "TriagePolicy":
         return cls()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes user-configurable policy rules to dictionary."""
+        return {
+            "name": self.name,
+            "whitelist_senders": list(self.whitelist_senders),
+            "blacklist_senders": list(self.blacklist_senders),
+            "archive_senders": list(self.archive_senders),
+            "custom_promo_keywords": list(self.custom_promo_keywords),
+            "custom_protect_keywords": list(self.custom_protect_keywords),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TriagePolicy":
+        """Instantiates TriagePolicy from a dictionary, keeping default safety patterns intact."""
+        policy = cls.default()
+        policy.name = data.get("name", "custom_policy")
+        policy.whitelist_senders = list(data.get("whitelist_senders", []))
+        policy.blacklist_senders = list(data.get("blacklist_senders", []))
+        policy.archive_senders = list(data.get("archive_senders", []))
+        policy.custom_promo_keywords = list(data.get("custom_promo_keywords", []))
+        policy.custom_protect_keywords = list(data.get("custom_protect_keywords", []))
+        return policy
+
+    @classmethod
+    def load(cls, path: Optional[Path] = None) -> "TriagePolicy":
+        """Loads policy from file or falls back to default."""
+        target_path = path or DEFAULT_POLICY_FILE
+        if target_path and target_path.exists():
+            try:
+                data = json.loads(target_path.read_text(encoding="utf-8"))
+                return cls.from_dict(data)
+            except Exception:
+                return cls.default()
+        return cls.default()
+
+    def save(self, path: Optional[Path] = None) -> Path:
+        """Saves current policy to JSON file."""
+        target_path = path or DEFAULT_POLICY_FILE
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        return target_path
+
 
 
 class TriageClassifier:
@@ -146,11 +337,49 @@ class TriageClassifier:
         combined_text = f"{sender} {subject}"
         labels = labels or []
         headers = headers or {}
+        domain = extract_sender_domain(sender)
+
+        # --------------------------------------------------------------------
+        # TIER 0: OPERATOR WHITELIST (Absolute Override)
+        # --------------------------------------------------------------------
+        for wl in self.policy.whitelist_senders:
+            wl_clean = wl.lower().strip()
+            if wl_clean in sender.lower() or wl_clean == domain:
+                return TriageDecision(
+                    message_id=message_id,
+                    thread_id=thread_id,
+                    sender=sender,
+                    subject=subject,
+                    date=date,
+                    category=TriageCategory.OPERATOR_WHITELIST,
+                    action=TriageAction.KEEP,
+                    rule_name="operator_whitelist",
+                    confidence=1.0,
+                    is_protected=True,
+                    reason=f"Matched operator whitelist rule: '{wl}'",
+                )
 
         # --------------------------------------------------------------------
         # TIER 1: PROTECT INVARIANTS (Zero False-Positive Tolerance)
         # Any match here forces action=KEEP and is_protected=True.
         # --------------------------------------------------------------------
+
+        # Custom protect keywords
+        for kw in self.policy.custom_protect_keywords:
+            if re.search(r"\b" + re.escape(kw) + r"\b", combined_text, re.I):
+                return TriageDecision(
+                    message_id=message_id,
+                    thread_id=thread_id,
+                    sender=sender,
+                    subject=subject,
+                    date=date,
+                    category=TriageCategory.PROTECTED_TRANSACTION,
+                    action=TriageAction.KEEP,
+                    rule_name="custom_protect_keyword",
+                    confidence=1.0,
+                    is_protected=True,
+                    reason=f"Matched custom protect keyword: '{kw}'",
+                )
 
         # 1.1 Financial
         for pat in self.policy.financial_patterns:
@@ -256,12 +485,53 @@ class TriageClassifier:
                 )
 
         # --------------------------------------------------------------------
-        # TIER 2: CANDIDATES FOR TRASH (Promotions & Marketing Blasts)
+        # TIER 2: OPERATOR BLACKLIST / ARCHIVE OVERRIDES
+        # --------------------------------------------------------------------
+        for bl in self.policy.blacklist_senders:
+            bl_clean = bl.lower().strip()
+            if bl_clean in sender.lower() or bl_clean == domain:
+                return TriageDecision(
+                    message_id=message_id,
+                    thread_id=thread_id,
+                    sender=sender,
+                    subject=subject,
+                    date=date,
+                    category=TriageCategory.OPERATOR_BLACKLIST,
+                    action=TriageAction.TRASH,
+                    rule_name="operator_blacklist",
+                    confidence=1.0,
+                    is_protected=False,
+                    reason=f"Matched operator blacklist rule: '{bl}'",
+                )
+
+        for ar in self.policy.archive_senders:
+            ar_clean = ar.lower().strip()
+            if ar_clean in sender.lower() or ar_clean == domain:
+                return TriageDecision(
+                    message_id=message_id,
+                    thread_id=thread_id,
+                    sender=sender,
+                    subject=subject,
+                    date=date,
+                    category=TriageCategory.NEWSLETTER_DIGEST,
+                    action=TriageAction.ARCHIVE,
+                    rule_name="operator_archive_rule",
+                    confidence=1.0,
+                    is_protected=False,
+                    reason=f"Matched operator archive sender rule: '{ar}'",
+                )
+
+        # --------------------------------------------------------------------
+        # TIER 3: CANDIDATES FOR TRASH (Promotions & Marketing Blasts)
         # --------------------------------------------------------------------
         has_promo_label = "CATEGORY_PROMOTIONS" in labels
         matched_promo_pattern = any(pat.search(combined_text) for pat in self.policy.promotional_patterns)
+        matched_custom_promo = any(
+            re.search(r"\b" + re.escape(kw) + r"\b", combined_text, re.I)
+            for kw in self.policy.custom_promo_keywords
+        )
 
-        if matched_promo_pattern or has_promo_label:
+        if matched_promo_pattern or has_promo_label or matched_custom_promo:
             # Re-verify no personal cues
             if not subject.lower().startswith("re: "):
                 return TriageDecision(
@@ -279,7 +549,26 @@ class TriageClassifier:
                 )
 
         # --------------------------------------------------------------------
-        # TIER 3: CANDIDATES FOR ARCHIVE (Newsletters & Digests)
+        # TIER 3.5: OPPORTUNITY ALERTS (Job Feeds & GovernmentJobs)
+        # --------------------------------------------------------------------
+        for pat in self.policy.opportunity_patterns:
+            if pat.search(combined_text):
+                return TriageDecision(
+                    message_id=message_id,
+                    thread_id=thread_id,
+                    sender=sender,
+                    subject=subject,
+                    date=date,
+                    category=TriageCategory.OPPORTUNITY_ALERT,
+                    action=TriageAction.ARCHIVE,
+                    rule_name="opportunity_alert_rule",
+                    confidence=0.95,
+                    is_protected=False,
+                    reason="Matched opportunity alert or job interest notification",
+                )
+
+        # --------------------------------------------------------------------
+        # TIER 4: CANDIDATES FOR ARCHIVE (Newsletters & Digests)
         # --------------------------------------------------------------------
         for pat in self.policy.newsletter_patterns:
             if pat.search(combined_text):
@@ -298,7 +587,7 @@ class TriageClassifier:
                 )
 
         # --------------------------------------------------------------------
-        # TIER 4: DEFAULT UNKNOWN -> SAFE KEEP
+        # TIER 5: DEFAULT UNKNOWN -> SAFE KEEP
         # --------------------------------------------------------------------
         return TriageDecision(
             message_id=message_id,
@@ -313,6 +602,107 @@ class TriageClassifier:
             is_protected=False,
             reason="Uncertain classification; safely defaulted to KEEP in inbox",
         )
+
+
+class TriageScanner:
+    """High-volume multi-pass scanner and domain clustering analyzer."""
+
+    def __init__(self, classifier: Optional[TriageClassifier] = None):
+        self.classifier = classifier or TriageClassifier()
+
+    def cluster_candidates(
+        self,
+        candidates: List[CandidateMessage],
+    ) -> List[SenderCluster]:
+        """Groups candidate messages by sender domain and computes aggregated metrics."""
+        domain_map: Dict[str, Dict[str, Any]] = {}
+
+        for c in candidates:
+            domain = extract_sender_domain(c.sender)
+            if domain not in domain_map:
+                domain_map[domain] = {
+                    "domain": domain,
+                    "senders": set(),
+                    "subjects": [],
+                    "decisions": [],
+                }
+
+            domain_map[domain]["senders"].add(c.sender)
+            if len(domain_map[domain]["subjects"]) < 3:
+                domain_map[domain]["subjects"].append(c.subject)
+
+            # Classify candidate
+            decision = self.classifier.classify(
+                message_id=c.id,
+                thread_id=c.thread_id,
+                sender=c.sender,
+                subject=c.subject,
+                date=c.date,
+            )
+            domain_map[domain]["decisions"].append(decision)
+
+        clusters: List[SenderCluster] = []
+        for domain, info in domain_map.items():
+            total = len(info["decisions"])
+            action_counts: Dict[TriageAction, int] = {}
+            category_counts: Dict[TriageCategory, int] = {}
+            is_any_protected = any(d.is_protected for d in info["decisions"])
+
+            for d in info["decisions"]:
+                action_counts[d.action] = action_counts.get(d.action, 0) + 1
+                category_counts[d.category] = category_counts.get(d.category, 0) + 1
+
+            if is_any_protected:
+                rec_action = TriageAction.KEEP
+                rec_cat = next((d.category for d in info["decisions"] if d.is_protected), TriageCategory.PROTECTED_TRANSACTION)
+            else:
+                rec_action = max(action_counts.items(), key=lambda x: x[1])[0]
+                rec_cat = max(category_counts.items(), key=lambda x: x[1])[0]
+
+            clusters.append(
+                SenderCluster(
+                    domain=domain,
+                    message_count=total,
+                    sender_addresses=sorted(list(info["senders"])),
+                    recommended_action=rec_action,
+                    category=rec_cat,
+                    sample_subjects=info["subjects"],
+                )
+            )
+
+        clusters.sort(key=lambda x: x.message_count, reverse=True)
+        return clusters
+
+
+@dataclass
+class TriageManifest:
+    """Immutable record of an AFK triage discovery and classification run."""
+    run_id: str
+    timestamp: str
+    query: str
+    total_scanned: int
+    action_counts: Dict[str, int]
+    category_counts: Dict[str, int]
+    top_clusters: List[Dict[str, Any]]
+    staged_plan_fingerprints: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "timestamp": self.timestamp,
+            "query": self.query,
+            "total_scanned": self.total_scanned,
+            "action_counts": dict(self.action_counts),
+            "category_counts": dict(self.category_counts),
+            "top_clusters": list(self.top_clusters),
+            "staged_plan_fingerprints": list(self.staged_plan_fingerprints),
+        }
+
+    def save(self, triage_dir: Path = TRIAGE_DIR) -> Path:
+        triage_dir.mkdir(parents=True, exist_ok=True)
+        path = triage_dir / f"manifest_{self.run_id}.json"
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        return path
 
 
 class TriagePlanGenerator:

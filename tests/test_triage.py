@@ -1,15 +1,22 @@
 """Unit tests for the autonomous inbox triage engine, classifier, and CLI."""
 
+import argparse
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
 from gmail_local.triage import (
-    TriageClassifier,
-    TriageCategory,
+    SenderCluster,
     TriageAction,
+    TriageCategory,
+    TriageClassifier,
     TriageDecision,
+    TriageManifest,
     TriagePlanGenerator,
     TriagePolicy,
+    TriageScanner,
+    extract_sender_domain,
 )
 from gmail_local.models import CleanupPlan, CleanupAction, CandidateMessage
 
@@ -107,6 +114,123 @@ class TestTriageClassifierUnit:
         assert d["is_protected"] is False
 
 
+class TestTriagePolicyCustomization:
+    """Unit tests for operator policy serialization, deserialization, and custom rules."""
+
+    def test_policy_to_and_from_dict(self):
+        policy = TriagePolicy(
+            name="custom_test_policy",
+            whitelist_senders=["vip@client.com"],
+            blacklist_senders=["annoying@junk.com"],
+            archive_senders=["digest@news.com"],
+            custom_promo_keywords=["huge clearance"],
+            custom_protect_keywords=["mortgage refi"],
+        )
+        d = policy.to_dict()
+        restored = TriagePolicy.from_dict(d)
+        assert restored.name == "custom_test_policy"
+        assert "vip@client.com" in restored.whitelist_senders
+        assert "annoying@junk.com" in restored.blacklist_senders
+        assert "huge clearance" in restored.custom_promo_keywords
+
+    def test_save_and_load_policy_file(self, tmp_path):
+        policy_file = tmp_path / "custom_policy.json"
+        policy = TriagePolicy(
+            name="disk_policy",
+            whitelist_senders=["lawyer@firm.com"],
+        )
+        saved = policy.save(policy_file)
+        assert saved.exists()
+
+        loaded = TriagePolicy.load(policy_file)
+        assert loaded.name == "disk_policy"
+        assert "lawyer@firm.com" in loaded.whitelist_senders
+
+    def test_operator_whitelist_overrides_everything(self):
+        policy = TriagePolicy(whitelist_senders=["deal_alert@vipclub.com"])
+        classifier = TriageClassifier(policy=policy)
+        decision = classifier.classify(
+            message_id="wl_1",
+            thread_id="t_wl_1",
+            sender="deal_alert@vipclub.com",
+            subject="50% off clearance flash sale",  # Promotional subject
+            date="2026-09-10",
+        )
+        assert decision.is_protected is True
+        assert decision.action == TriageAction.KEEP
+        assert decision.category == TriageCategory.OPERATOR_WHITELIST
+
+    def test_operator_blacklist_marks_trash(self):
+        policy = TriagePolicy(blacklist_senders=["spammybrand.com"])
+        classifier = TriageClassifier(policy=policy)
+        decision = classifier.classify(
+            message_id="bl_1",
+            thread_id="t_bl_1",
+            sender="Newsletter <news@spammybrand.com>",
+            subject="Daily updates for you",
+            date="2026-09-10",
+        )
+        assert decision.is_protected is False
+        assert decision.action == TriageAction.TRASH
+        assert decision.category == TriageCategory.OPERATOR_BLACKLIST
+
+    def test_custom_protect_keyword_overrides_promo(self):
+        policy = TriagePolicy(custom_protect_keywords=["escrow statement"])
+        classifier = TriageClassifier(policy=policy)
+        decision = classifier.classify(
+            message_id="cpk_1",
+            thread_id="t_cpk_1",
+            sender="title@deals.com",
+            subject="Save 20% on closing costs with your escrow statement",
+            date="2026-09-10",
+        )
+        assert decision.is_protected is True
+        assert decision.action == TriageAction.KEEP
+
+
+class TestTriageScannerAndClustering:
+    """Unit tests for domain clustering and scan manifest persistence."""
+
+    def test_extract_sender_domain(self):
+        assert extract_sender_domain("John Doe <john@example.com>") == "example.com"
+        assert extract_sender_domain("news@theathletic.com") == "theathletic.com"
+        assert extract_sender_domain("bare_string") == "unknown"
+
+    def test_cluster_candidates_aggregates_and_sorts(self):
+        candidates = [
+            CandidateMessage(id="1", thread_id="t1", date="2026-09-10", sender="A <a@store.com>", recipient="me", subject="Deal 1"),
+            CandidateMessage(id="2", thread_id="t2", date="2026-09-10", sender="B <b@store.com>", recipient="me", subject="Deal 2"),
+            CandidateMessage(id="3", thread_id="t3", date="2026-09-10", sender="Bank <alerts@bank.com>", recipient="me", subject="Account statement"),
+        ]
+        scanner = TriageScanner(TriageClassifier())
+        clusters = scanner.cluster_candidates(candidates)
+
+        assert len(clusters) == 2
+        # store.com should be rank 1 with 2 messages
+        assert clusters[0].domain == "store.com"
+        assert clusters[0].message_count == 2
+        assert clusters[1].domain == "bank.com"
+        assert clusters[1].message_count == 1
+        assert clusters[1].recommended_action == TriageAction.KEEP
+
+    def test_manifest_save_and_dict(self, tmp_path):
+        manifest = TriageManifest(
+            run_id="20260910_test",
+            timestamp="2026-09-10T12:00:00Z",
+            query="in:inbox",
+            total_scanned=25,
+            action_counts={"trash": 10, "archive": 10, "keep": 5},
+            category_counts={"promotions": 10},
+            top_clusters=[{"domain": "promo.com", "count": 10}],
+            staged_plan_fingerprints=["fp123456"],
+        )
+        saved = manifest.save(triage_dir=tmp_path)
+        assert saved.exists()
+        loaded = json.loads(saved.read_text(encoding="utf-8"))
+        assert loaded["run_id"] == "20260910_test"
+        assert loaded["total_scanned"] == 25
+
+
 class TestTriagePlanGeneratorUnit:
     """Unit tests for TriagePlanGenerator chunking and artifact staging."""
 
@@ -124,10 +248,10 @@ class TestTriagePlanGeneratorUnit:
             subject="Bank Statement",
             date="2026-09-10",
             category=TriageCategory.PROTECTED_FINANCIAL,
-            action=TriageAction.TRASH,  # Even if mistakenly set to TRASH
+            action=TriageAction.TRASH,
             rule_name="err",
             confidence=0.5,
-            is_protected=True,  # Guard flag is True
+            is_protected=True,
         )
         plans = generator.generate_staged_plans([protected_decision], action_filter=TriageAction.TRASH)
         assert plans == []
@@ -153,11 +277,10 @@ class TestTriagePlanGeneratorUnit:
 
 
 class TestTriageCLIUnit:
-    """Unit tests for CLI commands cmd_triage_scan and cmd_triage_plan."""
+    """Unit tests for CLI commands."""
 
     def test_cmd_triage_scan_with_candidates(self, capsys):
         from gmail_local.cli import cmd_triage_scan
-        import argparse
 
         mock_retriever = MagicMock()
         mock_retriever.search_messages.return_value = [
@@ -182,6 +305,7 @@ class TestTriageCLIUnit:
         args = argparse.Namespace(
             query="in:inbox",
             limit=10,
+            policy=None,
             purpose="test_scan",
         )
 
@@ -193,35 +317,52 @@ class TestTriageCLIUnit:
         assert "TRASH: 1" in captured
         assert "KEEP/PROTECT: 1" in captured
 
-    def test_cmd_triage_plan_generates_staged_bundle(self, capsys, tmp_path, monkeypatch):
-        from gmail_local.cli import cmd_triage_plan
-        import argparse
-
-        monkeypatch.setattr("gmail_local.triage.PLANS_DIR", tmp_path)
+    def test_cmd_triage_clusters(self, capsys):
+        from gmail_local.cli import cmd_triage_clusters
 
         mock_retriever = MagicMock()
         mock_retriever.search_messages.return_value = [
             CandidateMessage(
-                id="msg_test_promo",
-                thread_id="thr_test_promo",
+                id="msg_test_1",
+                thread_id="thr_test_1",
                 date="2026-09-10",
                 sender="Deals <deals@wayfair.com>",
                 recipient="me@example.com",
-                subject="Clearance: Extra 50% off furniture today!",
+                subject="Clearance deals",
+            ),
+            CandidateMessage(
+                id="msg_test_2",
+                thread_id="thr_test_2",
+                date="2026-09-10",
+                sender="Deals <support@wayfair.com>",
+                recipient="me@example.com",
+                subject="Another clearance deal",
             ),
         ]
 
         args = argparse.Namespace(
-            query="category:promotions",
+            query="in:inbox",
             limit=10,
-            action="trash",
-            purpose="test_plan",
+            policy=None,
+            purpose="test_clusters",
         )
 
-        retcode = cmd_triage_plan(mock_retriever, args)
+        retcode = cmd_triage_clusters(mock_retriever, args)
         assert retcode == 0
 
         captured = capsys.readouterr().out
-        assert "GENERATED 1 STAGED CLEANUP PLAN(S) VIA TRIAGE ENGINE" in captured
-        assert "Target Action:  TRASH" in captured
-        assert "cleanup apply --plan" in captured
+        assert "INBOX SENDER DOMAIN CLUSTERS & VOLUME BREAKDOWN" in captured
+        assert "wayfair.com" in captured
+
+    def test_cmd_triage_policy_show_and_init(self, capsys, tmp_path):
+        from gmail_local.cli import cmd_triage_policy_show, cmd_triage_policy_init
+
+        mock_retriever = MagicMock()
+        show_args = argparse.Namespace(policy=None)
+        assert cmd_triage_policy_show(mock_retriever, show_args) == 0
+        assert "TRIAGE POLICY CONFIGURATION" in capsys.readouterr().out
+
+        init_file = tmp_path / "new_policy.json"
+        init_args = argparse.Namespace(path=init_file, force=False)
+        assert cmd_triage_policy_init(mock_retriever, init_args) == 0
+        assert init_file.exists()
