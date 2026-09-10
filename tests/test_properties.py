@@ -280,3 +280,112 @@ class TestTransmissionPropertyInvariants:
         # Invariant: Extracted text matches original text after RFC 5322 line ending normalization
         expected_body = body_text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
         assert reconstructed.get_content().rstrip("\r\n") == expected_body
+
+
+@pytest.mark.property
+class TestModificationPropertyInvariants:
+    """Hypothesis generative invariant tests for CleanupPlan and mailbox modification bounds."""
+
+    msg_id_strategy = st.from_regex(r"[a-f0-9]{16}", fullmatch=True)
+
+    @given(
+        st.lists(msg_id_strategy, min_size=1, max_size=10, unique=True),
+        st.text(min_size=1, max_size=40).filter(lambda s: "\r" not in s and "\n" not in s and s.strip()),
+    )
+    @settings(max_examples=40)
+    def test_cleanup_plan_fingerprint_commutativity(self, msg_ids: List[str], query: str) -> None:
+        """Permuting target message order or surrounding whitespace must not change fingerprint."""
+        from gmail_local.models import CleanupAction, CleanupPlan, CleanupTarget
+        import random
+
+        targets1 = [
+            CleanupTarget(
+                message_id=mid,
+                thread_id=f"th_{mid}",
+                sender="sender@example.com",
+                subject="Subject",
+                date="2026-09-01",
+                action=CleanupAction.TRASH,
+            )
+            for mid in msg_ids
+        ]
+        p1 = CleanupPlan(query=query, action_type=CleanupAction.TRASH, targets=targets1)
+        fp1 = p1.compute_fingerprint()
+
+        # Permute target order and add padding to query
+        targets2 = list(targets1)
+        random.shuffle(targets2)
+        p2 = CleanupPlan(query=f"  {query}  ", action_type=CleanupAction.TRASH, targets=targets2)
+        fp2 = p2.compute_fingerprint()
+
+        assert fp1 == fp2
+        assert len(fp1) == 64
+
+    @given(
+        st.integers(min_value=51, max_value=120),
+    )
+    @settings(max_examples=20)
+    def test_cleanup_batch_ceiling_invariant(self, target_count: int) -> None:
+        """Target count exceeding 50 messages must always raise CleanupPlanValidationError."""
+        from gmail_local.models import CleanupAction, CleanupPlan, CleanupPlanValidationError, CleanupTarget
+
+        targets = [
+            CleanupTarget(
+                message_id=f"msg_{i}",
+                thread_id=f"th_{i}",
+                sender="s@e.com",
+                subject=f"Sub {i}",
+                date="2026-09-01",
+                action=CleanupAction.TRASH,
+            )
+            for i in range(target_count)
+        ]
+        plan = CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=targets)
+        with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 50"):
+            plan.validate()
+
+    @given(
+        st.text(
+            alphabet=st.characters(blacklist_categories=("Cs",), blacklist_characters="\r\n\x00"),
+            min_size=0,
+            max_size=20,
+        ),
+        st.sampled_from(["\r", "\n", "\r\n", "\n\r"]),
+        st.text(
+            alphabet=st.characters(blacklist_categories=("Cs",), blacklist_characters="\r\n\x00"),
+            min_size=0,
+            max_size=20,
+        ),
+    )
+    @settings(max_examples=40)
+    def test_cleanup_crlf_rejection_invariant(self, prefix: str, crlf: str, suffix: str) -> None:
+        """Any CRLF characters in target message_id or label must strictly fail validation."""
+        from gmail_local.models import CleanupAction, CleanupPlan, CleanupPlanValidationError, CleanupTarget
+
+        bad_val = f"{prefix}{crlf}{suffix}"
+
+        # Bad message_id
+        t1 = CleanupTarget(
+            message_id=bad_val,
+            thread_id="th1",
+            sender="s@e.com",
+            subject="Sub",
+            date="2026-09-01",
+            action=CleanupAction.TRASH,
+        )
+        with pytest.raises(CleanupPlanValidationError, match="CRLF"):
+            CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=[t1]).validate()
+
+        # Bad label
+        t2 = CleanupTarget(
+            message_id="msg123",
+            thread_id="th1",
+            sender="s@e.com",
+            subject="Sub",
+            date="2026-09-01",
+            action=CleanupAction.ADD_LABEL,
+            add_labels=[bad_val],
+        )
+        with pytest.raises(CleanupPlanValidationError, match="CRLF"):
+            CleanupPlan(query="test", action_type=CleanupAction.ADD_LABEL, targets=[t2]).validate()
+

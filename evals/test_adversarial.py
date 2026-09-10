@@ -337,3 +337,79 @@ def test_eval_draft_nonexistent_and_traversal_attachment(tmp_path: Path):
             attachment_paths=["/tmp/bad\x00path.pdf"],
         )
 
+
+def test_eval_cleanup_non_interactive_bypass_rejected(tmp_path: Path):
+    """Eval: Non-interactive cleanup apply without --confirm must fail with exit code 1."""
+    from unittest.mock import patch
+    from gmail_local.cli import main
+    from gmail_local.models import CleanupAction, CleanupPlan, CleanupTarget
+    from gmail_local.modifier import save_plan_locally
+
+    target = CleanupTarget(
+        message_id="msg_eval_1",
+        thread_id="th_1",
+        sender="spam@ad.com",
+        subject="Get Rich",
+        date="2026-08-01",
+        action=CleanupAction.TRASH,
+    )
+    plan = CleanupPlan(query="label:spam", action_type=CleanupAction.TRASH, targets=[target])
+    save_plan_locally(plan, plans_dir=tmp_path)
+    fp = plan.compute_fingerprint()
+
+    with patch("sys.stdin.isatty", return_value=False), patch("gmail_local.cli.PLANS_DIR", tmp_path):
+        exit_code = main(["cleanup", "apply", "--plan", fp])
+    assert exit_code == 1
+
+
+def test_eval_cleanup_permanent_delete_strictly_blocked():
+    """Eval: Permanent message deletion (users.messages.delete) is strictly blocked."""
+    from gmail_local.modifier import GmailModifier, SecurityViolationError
+    from unittest.mock import MagicMock
+
+    modifier = GmailModifier(service=MagicMock())
+    with pytest.raises(SecurityViolationError, match="Permanent deletion.*strictly forbidden"):
+        modifier.delete_message_permanently("msg_danger_123")
+
+
+def test_eval_cleanup_forged_batch_size_tamper_rejected(tmp_path: Path):
+    """Eval: Forged plan with >50 targets loaded from disk fails validation before any modification."""
+    from gmail_local.models import CleanupAction, CleanupPlan, CleanupPlanValidationError, CleanupTarget
+    from gmail_local.modifier import GmailModifier
+
+    targets = [
+        CleanupTarget(
+            message_id=f"msg_{i}",
+            thread_id=f"th_{i}",
+            sender="s@e.com",
+            subject="Sub",
+            date="2026-09-01",
+            action=CleanupAction.TRASH,
+        )
+        for i in range(55)
+    ]
+    forged_plan = CleanupPlan(query="all", action_type=CleanupAction.TRASH, targets=targets)
+    modifier = GmailModifier(service=MagicMock())
+
+    with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 50"):
+        modifier.apply_plan(forged_plan, confirm=True)
+
+
+def test_eval_cleanup_null_byte_and_crlf_rejection():
+    """Eval: Null bytes or CRLF in message IDs or labels are rejected."""
+    from gmail_local.models import CleanupAction, CleanupPlan, CleanupPlanValidationError, CleanupTarget
+
+    # Null byte in message_id
+    t1 = CleanupTarget(
+        message_id="msg\x00bad",
+        thread_id="th1",
+        sender="s@e.com",
+        subject="Sub",
+        date="2026-09-01",
+        action=CleanupAction.TRASH,
+    )
+    # Target validation
+    with pytest.raises(CleanupPlanValidationError):
+        CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=[t1]).validate()
+
+

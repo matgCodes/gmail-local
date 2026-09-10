@@ -195,3 +195,151 @@ def test_frozen_draft_serialization_roundtrip():
     assert restored.compute_fingerprint() == draft.compute_fingerprint()
 
 
+def test_cleanup_plan_fingerprint_and_canonicalization():
+    from gmail_local.models import (
+        CleanupAction,
+        CleanupPlan,
+        CleanupTarget,
+    )
+
+    t1 = CleanupTarget(
+        message_id="msg_b",
+        thread_id="th_b",
+        sender="bob@example.com",
+        subject="Promo B",
+        date="2026-09-01",
+        action=CleanupAction.TRASH,
+    )
+    t2 = CleanupTarget(
+        message_id="msg_a",
+        thread_id="th_a",
+        sender="alice@example.com",
+        subject="Promo A",
+        date="2026-09-02",
+        action=CleanupAction.TRASH,
+    )
+
+    # Permuted targets in plan1 vs plan2
+    p1 = CleanupPlan(
+        query="older_than:30d category:promotions",
+        action_type=CleanupAction.TRASH,
+        targets=[t1, t2],
+    )
+    p2 = CleanupPlan(
+        query="  older_than:30d category:promotions  ",
+        action_type=CleanupAction.TRASH,
+        targets=[t2, t1],
+    )
+
+    fp1 = p1.compute_fingerprint()
+    fp2 = p2.compute_fingerprint()
+    assert fp1 == fp2
+    assert len(fp1) == 64
+
+
+def test_cleanup_plan_validation_boundaries():
+    from gmail_local.models import (
+        CleanupAction,
+        CleanupPlan,
+        CleanupPlanValidationError,
+        CleanupTarget,
+    )
+
+    # Empty targets
+    with pytest.raises(CleanupPlanValidationError, match="at least one target"):
+        CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=[]).validate()
+
+    # Empty message_id
+    t_empty = CleanupTarget(
+        message_id="   ",
+        thread_id="th1",
+        sender="s@e.com",
+        subject="sub",
+        date="2026-09-01",
+        action=CleanupAction.TRASH,
+    )
+    with pytest.raises(CleanupPlanValidationError, match="empty message_id"):
+        CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=[t_empty]).validate()
+
+    # CRLF in message_id
+    t_crlf_id = CleanupTarget(
+        message_id="msg\r\n123",
+        thread_id="th1",
+        sender="s@e.com",
+        subject="sub",
+        date="2026-09-01",
+        action=CleanupAction.TRASH,
+    )
+    with pytest.raises(CleanupPlanValidationError, match="CRLF"):
+        CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=[t_crlf_id]).validate()
+
+    # CRLF in label
+    t_crlf_lbl = CleanupTarget(
+        message_id="msg123",
+        thread_id="th1",
+        sender="s@e.com",
+        subject="sub",
+        date="2026-09-01",
+        action=CleanupAction.ADD_LABEL,
+        add_labels=["valid", "bad\nlbl"],
+    )
+    with pytest.raises(CleanupPlanValidationError, match="CRLF"):
+        CleanupPlan(query="test", action_type=CleanupAction.ADD_LABEL, targets=[t_crlf_lbl]).validate()
+
+    # Exceeding batch ceiling (50)
+    targets_51 = [
+        CleanupTarget(
+            message_id=f"msg_{i}",
+            thread_id=f"th_{i}",
+            sender="s@e.com",
+            subject=f"sub {i}",
+            date="2026-09-01",
+            action=CleanupAction.TRASH,
+        )
+        for i in range(51)
+    ]
+    with pytest.raises(CleanupPlanValidationError, match="exceeds maximum batch bound of 50"):
+        CleanupPlan(query="test", action_type=CleanupAction.TRASH, targets=targets_51).validate()
+
+
+def test_cleanup_plan_serialization_roundtrip_and_handoff():
+    from gmail_local.models import (
+        CleanupAction,
+        CleanupPlan,
+        CleanupTarget,
+    )
+
+    targets = [
+        CleanupTarget(
+            message_id="m1",
+            thread_id="t1",
+            sender="news@site.com",
+            subject="Weekly Digest",
+            date="2026-08-01",
+            action=CleanupAction.ARCHIVE,
+            remove_labels=["INBOX"],
+        )
+    ]
+    plan = CleanupPlan(
+        query="from:news@site.com is:unread",
+        action_type=CleanupAction.ARCHIVE,
+        targets=targets,
+    )
+    d = plan.to_dict()
+    restored = CleanupPlan.from_dict(d)
+
+    assert restored.query == plan.query
+    assert restored.action_type == plan.action_type
+    assert len(restored.targets) == 1
+    assert restored.targets[0].message_id == "m1"
+    assert restored.targets[0].remove_labels == ["INBOX"]
+    assert restored.compute_fingerprint() == plan.compute_fingerprint()
+
+    handoff = plan.to_handoff_summary()
+    assert "CLEANUP HANDOFF" in handoff
+    assert plan.compute_fingerprint() in handoff
+    assert "Target Count:       1 messages" in handoff
+    assert "Weekly Digest" in handoff
+
+
+

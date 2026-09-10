@@ -130,6 +130,39 @@ gmail-local send --draft <fingerprint_or_draft_id> --confirm
 gmail-local compose-revoke
 ```
 
+### Modification & Cleanup Operations (`gmail.modify`)
+
+```bash
+# 1. Check modification connection status
+gmail-local modify-status
+
+# 2. Authenticate modification (system browser with PKCE flow)
+gmail-local modify-login
+
+# 3. Generate a staged cleanup plan (Dry-Run, non-destructive)
+# Trash (soft delete) newsletters older than 30 days
+gmail-local cleanup plan --query "category:promotions older_than:30d" --action trash --limit 50
+
+# Archive notifications
+gmail-local cleanup plan --query "from:noreply@app.com is:unread" --action archive --limit 20
+
+# 4. Preview targets and verify plan fingerprint
+gmail-local cleanup preview <plan-fingerprint>
+
+# 5. Apply plan under Manual Modify Gate
+# Interactive execution (prompts operator for confirmation):
+gmail-local cleanup apply --plan <plan-fingerprint>
+
+# Scripted execution (requires explicit confirmation flag):
+gmail-local cleanup apply --plan <plan-fingerprint> --confirm
+
+# 6. Reversible rollback: restore message from Trash back to mailbox
+gmail-local cleanup untrash <message-id>
+
+# 7. Revoke modification token and clear Keychain
+gmail-local modify-revoke
+```
+
 ---
 
 ## Hardening & Security Evaluations
@@ -137,7 +170,7 @@ gmail-local compose-revoke
 Run the comprehensive unit test suite and security evaluation benchmarks:
 
 ```bash
-# Run all 165 tests (147 unit + 18 security evals)
+# Run all 192 tests (170 unit & property + 22 security evals)
 .venv/bin/pytest
 
 # Run dedicated evaluation benchmark runner

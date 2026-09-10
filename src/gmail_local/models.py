@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
@@ -294,4 +295,167 @@ class FrozenDraft:
             draft_id=data.get("draft_id"),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
         )
+
+
+class CleanupAction(str, Enum):
+    TRASH = "trash"
+    ARCHIVE = "archive"
+    MARK_READ = "mark_read"
+    ADD_LABEL = "add_label"
+    REMOVE_LABEL = "remove_label"
+
+
+class CleanupPlanValidationError(ValueError):
+    """Raised when a CleanupPlan violates safety bounds or operational constraints."""
+
+
+@dataclass(frozen=True)
+class CleanupTarget:
+    """Individual message targeted for mutation."""
+    message_id: str
+    thread_id: str
+    sender: str
+    subject: str
+    date: str
+    action: CleanupAction
+    add_labels: List[str] = field(default_factory=list)
+    remove_labels: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CleanupPlan:
+    """Immutable mailbox modification plan bound to a deterministic cryptographic fingerprint."""
+    query: str
+    action_type: CleanupAction
+    targets: List[CleanupTarget]
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    def validate(self) -> None:
+        """Validates batch ceilings and target constraints."""
+        from gmail_local.config import MAX_CLEANUP_BATCH_SIZE
+
+        if not self.targets:
+            raise CleanupPlanValidationError("Cleanup plan must contain at least one target message.")
+
+        if len(self.targets) > MAX_CLEANUP_BATCH_SIZE:
+            raise CleanupPlanValidationError(
+                f"Target message count ({len(self.targets)}) exceeds maximum batch bound of {MAX_CLEANUP_BATCH_SIZE}."
+            )
+
+        for target in self.targets:
+            if not target.message_id:
+                raise CleanupPlanValidationError("Invalid empty message_id in cleanup target.")
+            if "\x00" in target.message_id:
+                raise CleanupPlanValidationError("Null byte character detected in target message_id.")
+            if "\r" in target.message_id or "\n" in target.message_id:
+                raise CleanupPlanValidationError("CRLF characters detected in target message_id.")
+            if not target.message_id.strip():
+                raise CleanupPlanValidationError("Invalid empty message_id in cleanup target.")
+            for lbl in target.add_labels + target.remove_labels:
+                if "\x00" in lbl:
+                    raise CleanupPlanValidationError("Null byte character detected in label name.")
+                if "\r" in lbl or "\n" in lbl:
+                    raise CleanupPlanValidationError(f"CRLF characters detected in label name: {repr(lbl)}")
+
+    def canonical_dict(self) -> Dict[str, Any]:
+        """Returns ordered, normalized representation for deterministic hashing."""
+        action_val = self.action_type.value if isinstance(self.action_type, CleanupAction) else str(self.action_type)
+        return {
+            "query": self.query.strip(),
+            "action_type": action_val,
+            "targets": [
+                {
+                    "message_id": t.message_id.strip(),
+                    "action": t.action.value if isinstance(t.action, CleanupAction) else str(t.action),
+                    "add_labels": sorted(t.add_labels),
+                    "remove_labels": sorted(t.remove_labels),
+                }
+                for t in sorted(self.targets, key=lambda x: x.message_id)
+            ],
+        }
+
+    def compute_fingerprint(self) -> str:
+        """Generates SHA-256 fingerprint of the canonical JSON representation."""
+        serialized = json.dumps(self.canonical_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes CleanupPlan to a dictionary."""
+        action_val = self.action_type.value if isinstance(self.action_type, CleanupAction) else str(self.action_type)
+        return {
+            "query": self.query,
+            "action_type": action_val,
+            "fingerprint": self.compute_fingerprint(),
+            "created_at": self.created_at,
+            "targets": [
+                {
+                    "message_id": t.message_id,
+                    "thread_id": t.thread_id,
+                    "sender": t.sender,
+                    "subject": t.subject,
+                    "date": t.date,
+                    "action": t.action.value if isinstance(t.action, CleanupAction) else str(t.action),
+                    "add_labels": list(t.add_labels),
+                    "remove_labels": list(t.remove_labels),
+                }
+                for t in self.targets
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CleanupPlan":
+        """Reconstructs a CleanupPlan instance from dictionary representation."""
+        action_type = CleanupAction(data["action_type"])
+        targets = [
+            CleanupTarget(
+                message_id=t["message_id"],
+                thread_id=t.get("thread_id", ""),
+                sender=t.get("sender", ""),
+                subject=t.get("subject", ""),
+                date=t.get("date", ""),
+                action=CleanupAction(t["action"]),
+                add_labels=list(t.get("add_labels", [])),
+                remove_labels=list(t.get("remove_labels", [])),
+            )
+            for t in data.get("targets", [])
+        ]
+        return cls(
+            query=data["query"],
+            action_type=action_type,
+            targets=targets,
+            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+        )
+
+    def to_handoff_summary(self) -> str:
+        """Emits standardized Cleanup Handoff block."""
+        fp = self.compute_fingerprint()
+        lines = [
+            "============================ CLEANUP HANDOFF ============================",
+            f"Plan Fingerprint:   {fp}",
+            f"Action Type:        {self.action_type.value.upper()}",
+            f"Target Count:       {len(self.targets)} messages (within 50-message batch bound)",
+            f"Search Query:       {self.query}",
+            "",
+            "Summary of Targets:",
+        ]
+        for t in self.targets[:5]:
+            lines.append(f"  - [{t.message_id}] {t.date} | {t.subject}")
+        if len(self.targets) > 5:
+            lines.append(f"  ... ({len(self.targets) - 5} more messages)")
+
+        lines.extend([
+            "",
+            f"Plan Staging:       ~/.local/state/gmail-local/plans/{fp}.json",
+            "",
+            "To review full target details:",
+            f"  gmail-local cleanup preview {fp}",
+            "",
+            "To authorize execution, the Operator must independently run:",
+            f"  gmail-local cleanup apply --plan {fp} --confirm",
+            "========================================================================",
+        ])
+        return "\n".join(lines)
+
 

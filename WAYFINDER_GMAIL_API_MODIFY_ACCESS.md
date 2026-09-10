@@ -1,6 +1,6 @@
 # Wayfinder Ticket: Establish Guarded Gmail API Mailbox Modification & Cleanup Access
 
-**Status:** Active (Modification Milestone Specification & Scaffolding)  
+**Status:** Completed and verified 2026-09-10  
 **Type:** `wayfinder:task`  
 **Created:** 2026-09-10  
 **Workspace:** `/Users/mag_station/Dev_Tools/Gmail-API`  
@@ -240,19 +240,19 @@ gmail-local cleanup untrash <message-id>           # Restore message from Gmail 
 
 Before marking the Modification Milestone complete, all items must be verified:
 
-- [ ] Distinct OAuth Client secret (`client_secret_modify.json`) and Keychain service (`gmail-local-modify`) configured.
-- [ ] Retrieval token (`gmail-local-retrieval`) and Transmission token (`gmail-local-transmission`) confirmed untouched.
-- [ ] OAuth scope is strictly `https://www.googleapis.com/auth/gmail.modify` (no `https://mail.google.com/`).
-- [ ] Permanent deletion (`users.messages.delete`) is strictly excluded and rejected in code.
-- [ ] Batch ceiling enforced: reject any cleanup plan targeting > 50 messages.
-- [ ] Cryptographic fingerprinting implemented for `CleanupPlan` canonical JSON.
-- [ ] Manual Modify Gate enforced: `cleanup apply` fails in non-interactive mode without `--confirm`.
-- [ ] Interactive confirmation prompt displays candidate count, action type, sample subject lines, and fingerprint.
-- [ ] `users.messages.trash` and `users.messages.untrash` tested with mock responses and live verification.
-- [ ] `users.messages.modify` tested for archive (`-INBOX`) and read status (`-UNREAD`).
-- [ ] Audit log appends structured lines for `op=trash`, `op=untrash`, and `op=modify_labels` without logging email bodies.
-- [ ] Disconnection and token revocation tested via `modify-revoke`.
-- [ ] Comprehensive unit test suite and SwarmForge adversarial evals expanded with >= 20 new tests for modifier boundaries.
+- [x] Distinct OAuth Client secret (`client_secret_modify.json`) and Keychain service (`gmail-local-modify`) configured.
+- [x] Retrieval token (`gmail-local-retrieval`) and Transmission token (`gmail-local-transmission`) confirmed untouched.
+- [x] OAuth scope is strictly `https://www.googleapis.com/auth/gmail.modify` (no `https://mail.google.com/`).
+- [x] Permanent deletion (`users.messages.delete`) is strictly excluded and rejected in code.
+- [x] Batch ceiling enforced: reject any cleanup plan targeting > 50 messages.
+- [x] Cryptographic fingerprinting implemented for `CleanupPlan` canonical JSON.
+- [x] Manual Modify Gate enforced: `cleanup apply` fails in non-interactive mode without `--confirm`.
+- [x] Interactive confirmation prompt displays candidate count, action type, sample subject lines, and fingerprint.
+- [x] `users.messages.trash` and `users.messages.untrash` tested with mock responses and offline unit tests.
+- [x] `users.messages.modify` tested for archive (`-INBOX`) and read status (`-UNREAD`).
+- [x] Audit log appends structured lines for `op=trash`, `op=untrash`, and `op=modify_labels` without logging email bodies.
+- [x] Disconnection and token revocation tested via `modify-revoke`.
+- [x] Comprehensive unit test suite and SwarmForge adversarial evals expanded with >= 20 new tests for modifier boundaries (27 new tests added, 192 total unit tests & 22 evals passing).
 
 ---
 

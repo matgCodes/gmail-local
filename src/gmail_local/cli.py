@@ -13,8 +13,22 @@ from gmail_local.composer import (
     load_draft_locally,
     save_draft_locally,
 )
-from gmail_local.config import DEFAULT_SEARCH_BOUND, DRAFTS_DIR
-from gmail_local.models import FrozenDraft, FrozenDraftValidationError
+from gmail_local.config import DEFAULT_SEARCH_BOUND, DRAFTS_DIR, MAX_CLEANUP_BATCH_SIZE, PLANS_DIR
+from gmail_local.models import (
+    CleanupAction,
+    CleanupPlan,
+    CleanupPlanValidationError,
+    CleanupTarget,
+    FrozenDraft,
+    FrozenDraftValidationError,
+)
+from gmail_local.modifier import (
+    GmailModifier,
+    ManualModifyGateViolationError,
+    SecurityViolationError,
+    load_plan_locally,
+    save_plan_locally,
+)
 from gmail_local.retrieval import GmailRetriever, RetrievalBoundError
 from gmail_local.sender import GmailSender
 
@@ -105,6 +119,57 @@ def cmd_compose_revoke(retriever: GmailRetriever, args: argparse.Namespace) -> i
         return 0
     except Exception as e:
         print(f"Transmission revocation error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_modify_status(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Report mailbox modification authorization status without exposing token secrets."""
+    secret_path = getattr(args, "client_secret", None)
+    auth = (
+        AuthManager.for_modification(client_secret_path=secret_path)
+        if secret_path
+        else AuthManager.for_modification()
+    )
+    status = auth.get_status()
+    print("=== Gmail Local Modification Status ===")
+    print(f"Account:          {status['account']}")
+    print(f"Keychain Service: {status['keychain_service']}")
+    print(f"Client Secret:    {'Found' if status['has_client_secret'] else 'Missing (~/.config/gmail-local/client_secret_modify.json)'}")
+    print(f"Keychain Token:   {'Present' if status['has_keychain_token'] else 'Not stored (run modify-login)'}")
+    print(f"Token Valid:      {'Yes (active & refreshable)' if status['is_valid'] else 'No'}")
+    print(f"Scope:            {status['scope']}")
+    return 0 if status["is_valid"] else 1
+
+
+def cmd_modify_login(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Execute interactive OAuth login for modification (gmail.modify) with PKCE."""
+    print("Initiating Modification OAuth login flow with Google...")
+    print("A browser window will open requesting consent for 'gmail.modify'.")
+    secret_path = getattr(args, "client_secret", None)
+    auth = (
+        AuthManager.for_modification(client_secret_path=secret_path)
+        if secret_path
+        else AuthManager.for_modification()
+    )
+    try:
+        account = auth.run_interactive_login(open_browser=not args.no_browser)
+        print(f"Successfully authorized modification and stored refresh token in Keychain for {account}!")
+        return 0
+    except AuthError as e:
+        print(f"Modification authorization error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_modify_revoke(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Revoke modification authorization and clear modification Keychain entry."""
+    print("Revoking Modification OAuth token and clearing Keychain entry...")
+    auth = AuthManager.for_modification()
+    try:
+        auth.revoke()
+        print("Successfully revoked modification credentials and removed from Keychain.")
+        return 0
+    except Exception as e:
+        print(f"Modification revocation error: {e}", file=sys.stderr)
         return 1
 
 
@@ -323,6 +388,126 @@ def cmd_drafts(retriever: GmailRetriever, args: argparse.Namespace) -> int:
             return 1
     else:
         print("Specify 'list' or 'get <draft_id>'", file=sys.stderr)
+        return 1
+
+
+def cmd_cleanup_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Generate a staged cleanup plan matching query and action."""
+    try:
+        action_enum = CleanupAction(args.action)
+        modifier = GmailModifier()
+        plan = modifier.build_plan(
+            query=args.query,
+            action=action_enum,
+            add_labels=getattr(args, "add_label", None),
+            remove_labels=getattr(args, "remove_label", None),
+            limit=args.limit,
+            purpose=args.purpose,
+        )
+        print(plan.to_handoff_summary())
+        return 0
+    except (CleanupPlanValidationError, AuthError) as e:
+        print(f"Cleanup plan error: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Cleanup plan generation failed: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_cleanup_preview(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Preview targets in a staged cleanup plan."""
+    try:
+        plan = load_plan_locally(args.plan, plans_dir=PLANS_DIR)
+        fp = plan.compute_fingerprint()
+        print("=== CLEANUP PLAN PREVIEW ===")
+        print(f"Plan Fingerprint: {fp}")
+        print(f"Action:           {plan.action_type.value.upper()}")
+        print(f"Query:            {plan.query}")
+        print(f"Target Count:     {len(plan.targets)} messages")
+        print("----------------------------------------------------------------")
+        for t in plan.targets:
+            add_str = f" +[{','.join(t.add_labels)}]" if t.add_labels else ""
+            rem_str = f" -[{','.join(t.remove_labels)}]" if t.remove_labels else ""
+            print(f"[{t.message_id}] {t.date} | {t.sender} | {t.subject}{add_str}{rem_str}")
+        print("================================================================")
+        return 0
+    except Exception as e:
+        print(f"Failed to preview cleanup plan: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_cleanup_apply(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Execute manual modify gate and apply a staged cleanup plan."""
+    try:
+        plan = load_plan_locally(args.plan, plans_dir=PLANS_DIR)
+    except Exception as e:
+        print(f"Cleanup plan not found matching identifier: '{args.plan}': {e}", file=sys.stderr)
+        return 1
+
+    fp = plan.compute_fingerprint()
+    print("=== MANUAL MODIFY GATE: MAILBOX MUTATION AUTHORIZATION ===")
+    print(f"Plan Fingerprint: {fp}")
+    print(f"Action Type:      {plan.action_type.value.upper()}")
+    print(f"Search Query:     {plan.query}")
+    print(f"Target Messages:  {len(plan.targets)}")
+    print("=========================================================")
+
+    if not args.confirm:
+        if not sys.stdin.isatty():
+            print(
+                "Manual Modify Gate violation: Mailbox modification in non-interactive environment requires explicit --confirm flag.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            user_input = input("Type 'yes' to authorize mailbox modification: ")
+            if user_input.strip().lower() != "yes":
+                print("Modification aborted by operator.", file=sys.stderr)
+                return 1
+        except (KeyboardInterrupt, EOFError):
+            print("\nModification aborted by operator.", file=sys.stderr)
+            return 1
+
+    try:
+        modifier = GmailModifier()
+        result = modifier.apply_plan(plan, confirm=True, purpose=args.purpose)
+        print("\n======================= CLEANUP EXECUTION RECEIPT =======================")
+        print("Status:          SUCCESS")
+        print(f"Plan FP:         {result['fingerprint']}")
+        print(f"Action:          {result['action'].upper()}")
+        print(f"Processed:       {result['processed']} messages")
+        print("=========================================================================")
+        return 0
+    except Exception as e:
+        print(f"Cleanup execution failed: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_cleanup_untrash(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Restore a message from Gmail Trash."""
+    try:
+        modifier = GmailModifier()
+        res = modifier.untrash(args.message_id, purpose=args.purpose)
+        print(f"Restored message '{res['message_id']}' from Trash.")
+        return 0
+    except Exception as e:
+        print(f"Failed to untrash message '{args.message_id}': {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_cleanup(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Dispatch cleanup subcommands."""
+    sub = getattr(args, "cleanup_subcommand", None)
+    if sub == "plan":
+        return cmd_cleanup_plan(retriever, args)
+    elif sub == "preview":
+        return cmd_cleanup_preview(retriever, args)
+    elif sub == "apply":
+        return cmd_cleanup_apply(retriever, args)
+    elif sub == "untrash":
+        return cmd_cleanup_untrash(retriever, args)
+    else:
+        print("Specify a cleanup subcommand: plan, preview, apply, or untrash", file=sys.stderr)
         return 1
 
 
@@ -559,6 +744,56 @@ def build_parser() -> argparse.ArgumentParser:
     # compose-revoke
     p_comp_revoke = subparsers.add_parser("compose-revoke", help="Revoke transmission authorization and clear Keychain entry")
     p_comp_revoke.set_defaults(func=cmd_compose_revoke)
+
+    # modify-status
+    p_mod_status = subparsers.add_parser("modify-status", help="Check Modification Grant status")
+    p_mod_status.add_argument("--client-secret", type=Path, default=None, help="Path to modification client secret JSON")
+    p_mod_status.set_defaults(func=cmd_modify_status)
+
+    # modify-login
+    p_mod_login = subparsers.add_parser("modify-login", help="Run interactive OAuth2 login for modification (gmail.modify)")
+    p_mod_login.add_argument("--client-secret", type=Path, default=None, help="Path to modification client secret JSON")
+    p_mod_login.add_argument("--no-browser", action="store_true", help="Do not automatically launch system browser")
+    p_mod_login.set_defaults(func=cmd_modify_login)
+
+    # modify-revoke
+    p_mod_revoke = subparsers.add_parser("modify-revoke", help="Revoke modification authorization and clear Keychain entry")
+    p_mod_revoke.set_defaults(func=cmd_modify_revoke)
+
+    # cleanup
+    p_cleanup = subparsers.add_parser("cleanup", help="Staged mailbox modification and cleanup")
+    p_cleanup_sub = p_cleanup.add_subparsers(dest="cleanup_subcommand")
+
+    p_cl_plan = p_cleanup_sub.add_parser("plan", help="Generate a staged cleanup plan")
+    p_cl_plan.add_argument("--query", required=True, help="Gmail search query for targets")
+    p_cl_plan.add_argument(
+        "--action",
+        required=True,
+        choices=["trash", "archive", "mark_read", "add_label", "remove_label"],
+        help="Action to perform",
+    )
+    p_cl_plan.add_argument("--add-label", nargs="*", default=[], help="Labels to apply")
+    p_cl_plan.add_argument("--remove-label", nargs="*", default=[], help="Labels to remove")
+    p_cl_plan.add_argument("--limit", type=int, default=10, help="Max candidate messages (1-50)")
+    p_cl_plan.add_argument("--purpose", default="cleanup_plan", help="Operator-stated purpose for audit log")
+    p_cl_plan.set_defaults(func=cmd_cleanup_plan)
+
+    p_cl_prev = p_cleanup_sub.add_parser("preview", help="Preview targets in a staged cleanup plan")
+    p_cl_prev.add_argument("plan", help="Fingerprint or path of the plan")
+    p_cl_prev.set_defaults(func=cmd_cleanup_preview)
+
+    p_cl_apply = p_cleanup_sub.add_parser("apply", help="Execute a staged cleanup plan under Manual Modify Gate")
+    p_cl_apply.add_argument("--plan", required=True, help="Fingerprint or path of the plan")
+    p_cl_apply.add_argument("--confirm", action="store_true", help="Explicit human confirmation for non-interactive execution")
+    p_cl_apply.add_argument("--purpose", default="cleanup_apply", help="Operator-stated purpose for audit log")
+    p_cl_apply.set_defaults(func=cmd_cleanup_apply)
+
+    p_cl_untrash = p_cleanup_sub.add_parser("untrash", help="Restore a message from Gmail Trash")
+    p_cl_untrash.add_argument("message_id", help="Message ID to restore")
+    p_cl_untrash.add_argument("--purpose", default="cleanup_untrash", help="Operator-stated purpose for audit log")
+    p_cl_untrash.set_defaults(func=cmd_cleanup_untrash)
+
+    p_cleanup.set_defaults(func=cmd_cleanup)
 
     # draft
     p_draft = subparsers.add_parser("draft", help="Compose a FrozenDraft and optionally stage to Gmail Drafts")

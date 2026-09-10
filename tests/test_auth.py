@@ -125,3 +125,48 @@ def test_transmission_auth_manager_defaults_and_isolation(tmp_path: Path):
     assert trans_manager.get_status()["has_keychain_token"] is False
     assert keyring_mock.get_password("gmail-local-retrieval", "test@example.com") == "retrieval-token"
 
+
+def test_modification_auth_manager_defaults_and_isolation(tmp_path: Path):
+    from gmail_local.config import (
+        CLIENT_SECRET_MODIFY_FILE,
+        KEYCHAIN_SERVICE_MODIFY,
+        MODIFY_SCOPE,
+    )
+
+    keyring_mock = FakeKeyring()
+    # Populate existing retrieval and transmission tokens
+    keyring_mock.set_password("gmail-local-retrieval", "test@example.com", "retrieval-token")
+    keyring_mock.set_password("gmail-local-transmission", "test@example.com", "transmission-token")
+
+    # Create modification manager
+    modify_manager = AuthManager.for_modification(
+        account="test@example.com",
+        keyring_backend=keyring_mock,
+    )
+
+    assert modify_manager.keychain_service == KEYCHAIN_SERVICE_MODIFY
+    assert modify_manager.client_secret_path == CLIENT_SECRET_MODIFY_FILE
+    assert modify_manager.scopes == [MODIFY_SCOPE]
+
+    # Crucial ADR 0003/0010 isolation test: modify manager must NOT see retrieval or transmission tokens!
+    status = modify_manager.get_status()
+    assert status["keychain_service"] == KEYCHAIN_SERVICE_MODIFY
+    assert status["scope"] == MODIFY_SCOPE
+    assert status["has_keychain_token"] is False
+
+    # Store modify token and verify it does NOT overwrite others
+    keyring_mock.set_password(KEYCHAIN_SERVICE_MODIFY, "test@example.com", "modify-token")
+    assert modify_manager.get_status()["has_keychain_token"] is True
+    assert keyring_mock.get_password("gmail-local-retrieval", "test@example.com") == "retrieval-token"
+    assert keyring_mock.get_password("gmail-local-transmission", "test@example.com") == "transmission-token"
+
+    # Revoke modify token and verify others remain intact
+    with patch("requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        modify_manager.revoke()
+
+    assert modify_manager.get_status()["has_keychain_token"] is False
+    assert keyring_mock.get_password("gmail-local-retrieval", "test@example.com") == "retrieval-token"
+    assert keyring_mock.get_password("gmail-local-transmission", "test@example.com") == "transmission-token"
+
+

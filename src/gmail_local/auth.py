@@ -11,10 +11,13 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 from gmail_local.config import (
     CLIENT_SECRET_FILE,
+    CLIENT_SECRET_MODIFY_FILE,
     CLIENT_SECRET_TRANSMISSION_FILE,
     DEFAULT_ACCOUNT,
     KEYCHAIN_SERVICE,
+    KEYCHAIN_SERVICE_MODIFY,
     KEYCHAIN_SERVICE_TRANSMISSION,
+    MODIFY_SCOPE,
     RETRIEVAL_SCOPE,
     TRANSMISSION_SCOPE,
 )
@@ -85,6 +88,23 @@ class AuthManager:
             account=account,
             keyring_backend=keyring_backend,
             scopes=[TRANSMISSION_SCOPE],
+        )
+
+    @classmethod
+    def for_modification(
+        cls,
+        client_secret_path: Path = CLIENT_SECRET_MODIFY_FILE,
+        keychain_service: str = KEYCHAIN_SERVICE_MODIFY,
+        account: str = DEFAULT_ACCOUNT,
+        keyring_backend: Any = keyring,
+    ) -> "AuthManager":
+        """Factory creating an AuthManager bound to the Modification Grant (ADR 0003, ADR 0004, ADR 0010)."""
+        return cls(
+            client_secret_path=client_secret_path,
+            keychain_service=keychain_service,
+            account=account,
+            keyring_backend=keyring_backend,
+            scopes=[MODIFY_SCOPE],
         )
 
     def load_client_config(self) -> Dict[str, Any]:

@@ -425,3 +425,165 @@ def test_cli_send_draft_not_found(capsys, tmp_path: Path):
     captured = capsys.readouterr()
     assert "Draft not found" in captured.err
 
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_modify_status(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_modification.return_value
+    mock_auth.get_status.return_value = {
+        "account": "user@example.com",
+        "keychain_service": "gmail-local-modify",
+        "has_client_secret": True,
+        "has_keychain_token": True,
+        "is_valid": True,
+        "scope": "https://www.googleapis.com/auth/gmail.modify",
+    }
+    exit_code = main(["modify-status"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "=== Gmail Local Modification Status ===" in captured.out
+    assert "gmail-local-modify" in captured.out
+    assert "https://www.googleapis.com/auth/gmail.modify" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_modify_login(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_modification.return_value
+    mock_auth.run_interactive_login.return_value = "user@example.com"
+
+    exit_code = main(["modify-login", "--no-browser"])
+    assert exit_code == 0
+    mock_auth.run_interactive_login.assert_called_once_with(open_browser=False)
+    captured = capsys.readouterr()
+    assert "Successfully authorized modification" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_modify_revoke(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_modification.return_value
+
+    exit_code = main(["modify-revoke"])
+    assert exit_code == 0
+    mock_auth.revoke.assert_called_once()
+    captured = capsys.readouterr()
+    assert "Successfully revoked modification credentials" in captured.out
+
+
+@patch("gmail_local.cli.GmailModifier")
+def test_cli_cleanup_plan_command(mock_mod_cls, capsys):
+    from gmail_local.models import CleanupAction, CleanupPlan, CleanupTarget
+    target = CleanupTarget(
+        message_id="msg_1",
+        thread_id="th_1",
+        sender="promo@shop.com",
+        subject="Big Discount",
+        date="2026-08-01",
+        action=CleanupAction.TRASH,
+    )
+    plan = CleanupPlan(
+        query="older_than:30d",
+        action_type=CleanupAction.TRASH,
+        targets=[target],
+    )
+    mock_mod = mock_mod_cls.return_value
+    mock_mod.build_plan.return_value = plan
+
+    exit_code = main(["cleanup", "plan", "--query", "older_than:30d", "--action", "trash"])
+    assert exit_code == 0
+    mock_mod.build_plan.assert_called_once()
+    captured = capsys.readouterr()
+    assert "CLEANUP HANDOFF" in captured.out
+    assert plan.compute_fingerprint() in captured.out
+
+
+@patch("gmail_local.cli.load_plan_locally")
+def test_cli_cleanup_preview_command(mock_load_plan, capsys):
+    from gmail_local.models import CleanupAction, CleanupPlan, CleanupTarget
+    target = CleanupTarget(
+        message_id="msg_2",
+        thread_id="th_2",
+        sender="newsletter@site.com",
+        subject="Monthly Brief",
+        date="2026-08-10",
+        action=CleanupAction.ARCHIVE,
+        remove_labels=["INBOX"],
+    )
+    plan = CleanupPlan(
+        query="label:newsletter",
+        action_type=CleanupAction.ARCHIVE,
+        targets=[target],
+    )
+    mock_load_plan.return_value = plan
+
+    exit_code = main(["cleanup", "preview", "mock_fp"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "=== CLEANUP PLAN PREVIEW ===" in captured.out
+    assert "msg_2" in captured.out
+    assert "Monthly Brief" in captured.out
+
+
+@patch("sys.stdin.isatty", return_value=False)
+@patch("gmail_local.cli.load_plan_locally")
+def test_cli_cleanup_apply_non_interactive_without_confirm_fails(mock_load_plan, mock_isatty, capsys):
+    from gmail_local.models import CleanupAction, CleanupPlan, CleanupTarget
+    target = CleanupTarget(
+        message_id="msg_3",
+        thread_id="th_3",
+        sender="ad@site.com",
+        subject="Sale",
+        date="2026-08-10",
+        action=CleanupAction.TRASH,
+    )
+    plan = CleanupPlan(query="label:ads", action_type=CleanupAction.TRASH, targets=[target])
+    mock_load_plan.return_value = plan
+
+    exit_code = main(["cleanup", "apply", "--plan", "some_fp"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Manual Modify Gate violation" in captured.err
+    assert "--confirm" in captured.err
+
+
+@patch("sys.stdin.isatty", return_value=False)
+@patch("gmail_local.cli.GmailModifier")
+@patch("gmail_local.cli.load_plan_locally")
+def test_cli_cleanup_apply_with_confirm_succeeds(mock_load_plan, mock_mod_cls, mock_isatty, capsys):
+    from gmail_local.models import CleanupAction, CleanupPlan, CleanupTarget
+    target = CleanupTarget(
+        message_id="msg_4",
+        thread_id="th_4",
+        sender="ad@site.com",
+        subject="Sale Today",
+        date="2026-08-10",
+        action=CleanupAction.TRASH,
+    )
+    plan = CleanupPlan(query="label:ads", action_type=CleanupAction.TRASH, targets=[target])
+    mock_load_plan.return_value = plan
+    mock_mod = mock_mod_cls.return_value
+    mock_mod.apply_plan.return_value = {
+        "status": "SUCCESS",
+        "fingerprint": plan.compute_fingerprint(),
+        "processed": 1,
+        "action": "trash",
+    }
+
+    exit_code = main(["cleanup", "apply", "--plan", "some_fp", "--confirm"])
+    assert exit_code == 0
+    mock_mod.apply_plan.assert_called_once()
+    captured = capsys.readouterr()
+    assert "CLEANUP EXECUTION RECEIPT" in captured.out
+    assert "Processed:       1 messages" in captured.out
+
+
+@patch("gmail_local.cli.GmailModifier")
+def test_cli_cleanup_untrash_command(mock_mod_cls, capsys):
+    mock_mod = mock_mod_cls.return_value
+    mock_mod.untrash.return_value = {"status": "SUCCESS", "message_id": "msg_restore_99"}
+
+    exit_code = main(["cleanup", "untrash", "msg_restore_99"])
+    assert exit_code == 0
+    mock_mod.untrash.assert_called_once_with("msg_restore_99", purpose="cleanup_untrash")
+    captured = capsys.readouterr()
+    assert "Restored message 'msg_restore_99' from Trash" in captured.out
+
+
