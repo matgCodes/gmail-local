@@ -60,12 +60,15 @@ flowchart TD
 
 ---
 
-## 4. Verified Phase 1 Progress
+## 4. Verified Phase 1 & 2 Progress
 
 - [x] Tested and verified schema extraction on live `info@governmentjobs.com` messages.
 - [x] Extracted 275 unique job postings across 98 notification emails (30-day window).
 - [x] Mapped postings to [`JOB_SEARCH_RUNBOOK.md`](/Users/mag_station/Documents/Job%20Search/JOB_SEARCH_RUNBOOK.md) criteria (97 Tier-1 High Match roles identified).
 - [x] Generated live markdown feed: [`/Users/mag_station/Documents/Job Search/INBOX/GovernmentJobs_Live_Feed_2026-09-10.md`](file:///Users/mag_station/Documents/Job%20Search/INBOX/GovernmentJobs_Live_Feed_2026-09-10.md).
 - [x] Generated structured data feed: [`/Users/mag_station/Documents/Job Search/INBOX/governmentjobs_feed.json`](file:///Users/mag_station/Documents/Job%20Search/INBOX/governmentjobs_feed.json).
-- [ ] Implement production `src/gmail_local/triage.py` module with automated tests and evals.
-- [ ] Stage archive cleanup plan for the 98 processed notification emails under the Manual Modify Gate.
+- [x] Implemented production `src/gmail_local/triage.py` engine and CLI subcommands (`scan`, `plan`, `clusters`, `policy`).
+- [x] Interactive policy calibration completed and saved to `~/.config/gmail-local/triage_policy.json` with strict operator whitelists (Home Depot, Ralphs, GasBuddy, The Athletic, Lennar/Lennox, Streamable, Linux Foundation).
+- [x] Staged first promotional soft-deletion plan (`3127b59b249fe5a50cf522a276801a488a0a09126bcaf69c55985eb869b1df0b.json`) for Operator review under Manual Modify Gate.
+- [ ] Operator review and execution of staged deletion plans.
+
