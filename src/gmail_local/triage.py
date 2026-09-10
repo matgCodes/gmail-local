@@ -235,6 +235,7 @@ class TriagePolicy:
 
     transaction_patterns: List[re.Pattern] = field(default_factory=lambda: [
         re.compile(r"\b(receipt|invoice|order confirmation|order #|your order (?:has|is|details|status|summary|confirmation)|ready for pickup|trip with uber|payment received|payment to|billing)\b", re.I),
+        re.compile(r"\b(?:your|monthly|utility|electric|water|cable|phone|internet)\s+(?:\w+\s+)?bill\b|\bbill\s+(?:is\s+due|ready|statement|summary|payment)\b", re.I),
         re.compile(r"@(amazon|apple|paypal|stripe|bestbuy|target|walmart)\.com", re.I),
     ])
 
