@@ -626,11 +626,18 @@ def cmd_triage_scan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
 def cmd_triage_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     """Scan candidate messages and generate partitioned CleanupPlan artifacts."""
     try:
-        candidates = retriever.search_messages(
-            query=args.query,
-            max_results=args.limit,
-            purpose=args.purpose,
-        )
+        if args.limit > MAX_SEARCH_BOUND:
+            candidates = retriever.search_candidates_paginated(
+                query=args.query,
+                total_limit=args.limit,
+                purpose=args.purpose,
+            )
+        else:
+            candidates = retriever.search_messages(
+                query=args.query,
+                max_results=args.limit,
+                purpose=args.purpose,
+            )
         if not candidates:
             print(f"No messages matched triage query: '{args.query}'")
             return 0
@@ -746,6 +753,96 @@ def cmd_triage_clusters(retriever: GmailRetriever, args: argparse.Namespace) -> 
     except Exception as e:
         print(f"Clustering analysis failed with error: {e}", file=sys.stderr)
         return 1
+
+
+def cmd_triage_loop(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Execute autonomous AFK triage loop over candidate query until limit is reached."""
+    if not args.confirm:
+        print(
+            "Manual Modify Gate: triage loop in non-interactive environment requires explicit --confirm flag.",
+            file=sys.stderr,
+        )
+        return 1
+
+    policy_path = getattr(args, "policy", None)
+    policy = TriagePolicy.load(policy_path)
+    classifier = TriageClassifier(policy=policy)
+    generator = TriagePlanGenerator()
+    modifier = GmailModifier()
+
+    target_action = TriageAction.TRASH if args.action == "trash" else TriageAction.ARCHIVE
+    total_processed = 0
+    total_protected_skipped = 0
+    iteration = 0
+    max_total = args.max_total
+    batch_size = min(args.batch_size, MAX_CLEANUP_BATCH_SIZE)
+
+    print("=" * 78)
+    print("  AUTONOMOUS AFK INBOX TRIAGE LOOP")
+    print("=" * 78)
+    print(f"Query:        {args.query}")
+    print(f"Target Action:{target_action.value.upper()}")
+    print(f"Max Cap:      {max_total} messages")
+    print(f"Slice Size:   {batch_size} messages/batch")
+    print(f"Policy:       {policy.name}")
+    print("-" * 78)
+
+    while total_processed < max_total:
+        iteration += 1
+        current_limit = min(batch_size, max_total - total_processed)
+
+        # Retrieve candidates
+        candidates = retriever.search_messages(
+            query=args.query,
+            max_results=current_limit,
+            purpose=f"{args.purpose}_iter_{iteration}",
+        )
+        if not candidates:
+            print(f"\n[Loop] No more messages matching query '{args.query}'. Loop complete.")
+            break
+
+        # Classify candidates
+        decisions: List[TriageDecision] = []
+        for c in candidates:
+            d = classifier.classify(
+                message_id=c.id,
+                thread_id=c.thread_id,
+                sender=c.sender,
+                subject=c.subject,
+                date=c.date,
+            )
+            decisions.append(d)
+
+        # Count skipped
+        protected_in_batch = sum(1 for d in decisions if d.is_protected or d.action != target_action)
+        total_protected_skipped += protected_in_batch
+
+        plans = generator.generate_staged_plans(
+            decisions=decisions,
+            action_filter=target_action,
+            max_batch_size=batch_size,
+            query=args.query,
+        )
+
+        if not plans:
+            print(f"\n[Iteration {iteration}] All {len(candidates)} candidates in slice are protected/kept. Halting loop to prevent spinning.")
+            break
+
+        batch_targets = sum(len(p.targets) for p in plans)
+        for p in plans:
+            modifier.apply_plan(p, confirm=True, purpose=args.purpose)
+
+        total_processed += batch_targets
+        print(f"[Iteration {iteration:02d}] Applied {batch_targets:2d} {target_action.value.upper()} mutations (Cumulative: {total_processed}/{max_total})")
+
+    print("=" * 78)
+    print("  TRIAGE LOOP COMPLETED")
+    print("=" * 78)
+    print(f"Total Iterations:        {iteration}")
+    print(f"Total Messages Processed:{total_processed}")
+    print(f"Total Protected Skipped: {total_protected_skipped}")
+    print("=" * 78)
+    return 0
 
 
 def cmd_triage_policy_show(retriever: GmailRetriever, args: argparse.Namespace) -> int:
@@ -1115,7 +1212,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_tr_plan = p_triage_sub.add_parser("plan", help="Scan candidates and generate partitioned CleanupPlan artifacts")
     p_tr_plan.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
-    p_tr_plan.add_argument("--limit", type=int, default=MAX_CLEANUP_BATCH_SIZE, help=f"Candidates to inspect (1-{MAX_CLEANUP_BATCH_SIZE})")
+    p_tr_plan.add_argument("--limit", type=int, default=MAX_CLEANUP_BATCH_SIZE, help="Candidates to inspect (1-500)")
     p_tr_plan.add_argument("--action", choices=["trash", "archive"], default="trash", help="Target action to stage into plans")
     p_tr_plan.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
     p_tr_plan.add_argument("--purpose", default="triage_plan", help="Operator-stated purpose for audit log")
@@ -1127,6 +1224,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_tr_clusters.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
     p_tr_clusters.add_argument("--purpose", default="triage_clusters", help="Operator-stated purpose for audit log")
     p_tr_clusters.set_defaults(func=cmd_triage_clusters)
+
+    p_tr_loop = p_triage_sub.add_parser("loop", help="Autonomous loop executing staged triage batches up to a target cap")
+    p_tr_loop.add_argument("--query", default="category:promotions", help="Search query (default: category:promotions)")
+    p_tr_loop.add_argument("--max-total", type=int, default=500, help="Maximum total messages to process (1-2000)")
+    p_tr_loop.add_argument("--batch-size", type=int, default=MAX_CLEANUP_BATCH_SIZE, help=f"Slice size per iteration (1-{MAX_CLEANUP_BATCH_SIZE})")
+    p_tr_loop.add_argument("--action", choices=["trash", "archive"], default="trash", help="Target action to stage and apply")
+    p_tr_loop.add_argument("--policy", type=Path, default=None, help="Path to custom triage policy JSON")
+    p_tr_loop.add_argument("--confirm", action="store_true", help="Explicit human confirmation for autonomous loop execution")
+    p_tr_loop.add_argument("--purpose", default="triage_loop", help="Operator-stated purpose for audit log")
+    p_tr_loop.set_defaults(func=cmd_triage_loop)
 
     p_tr_policy = p_triage_sub.add_parser("policy", help="Inspect or initialize triage policy configuration")
     p_tr_policy_sub = p_tr_policy.add_subparsers(dest="policy_subcommand")
