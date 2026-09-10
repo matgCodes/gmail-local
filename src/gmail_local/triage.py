@@ -454,19 +454,21 @@ class TriageClassifier:
         # Direct user replies, conversation threads, or personal pattern cues
         for pat in self.policy.personal_patterns:
             if pat.search(combined_text):
-                return TriageDecision(
-                    message_id=message_id,
-                    thread_id=thread_id,
-                    sender=sender,
-                    subject=subject,
-                    date=date,
-                    category=TriageCategory.PROTECTED_PERSONAL,
-                    action=TriageAction.KEEP,
-                    rule_name="protect_personal_cue_rule",
-                    confidence=0.95,
-                    is_protected=True,
-                    reason="Matched personal correspondence topic pattern",
-                )
+                # Don't treat explicitly blacklisted marketing domains as personal correspondence
+                if not any(bl.lower() in sender.lower() or bl.lower() == domain for bl in self.policy.blacklist_senders):
+                    return TriageDecision(
+                        message_id=message_id,
+                        thread_id=thread_id,
+                        sender=sender,
+                        subject=subject,
+                        date=date,
+                        category=TriageCategory.PROTECTED_PERSONAL,
+                        action=TriageAction.KEEP,
+                        rule_name="protect_personal_cue_rule",
+                        confidence=0.95,
+                        is_protected=True,
+                        reason="Matched personal correspondence topic pattern",
+                    )
 
         if subject.lower().startswith("re: ") or subject.lower().startswith("fwd: "):
             # If it doesn't match promotional/marketing senders, treat as personal thread
