@@ -7,6 +7,7 @@ name = "gmail-local"
 version = "0.1.0"
 description = "Locally operated, read-only Gmail integration with least-privilege security bounds"
 readme = "WAYFINDER_GMAIL_API_READ_ACCESS.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
     "google-api-python-client>=2.100.0",

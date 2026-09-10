@@ -27,7 +27,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Run test suite (18 tests, 100% offline mock execution)
+# Run test suite (125 tests, 100% offline mock execution)
 pytest -v
 ```
 
@@ -106,9 +106,15 @@ gmail-local revoke
 Run the comprehensive unit test suite and security evaluation benchmarks:
 
 ```bash
-# Run all 68 unit tests & security evals
+# Run all 125 tests & 15 security evals
 .venv/bin/pytest tests evals
 
 # Run dedicated benchmark runner
 .venv/bin/python evals/run_evals.py
 ```
+
+---
+
+## License
+
+Distributed under the MIT License. See [LICENSE](LICENSE) for details.
