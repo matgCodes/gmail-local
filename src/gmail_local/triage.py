@@ -234,7 +234,7 @@ class TriagePolicy:
     ])
 
     transaction_patterns: List[re.Pattern] = field(default_factory=lambda: [
-        re.compile(r"\b(receipt|invoice|your order|has shipped|ready for pickup|trip with uber|payment received|payment to|billing)\b", re.I),
+        re.compile(r"\b(receipt|invoice|order confirmation|order #|your order (?:has|is|details|status|summary|confirmation)|ready for pickup|trip with uber|payment received|payment to|billing)\b", re.I),
         re.compile(r"@(amazon|apple|paypal|stripe|bestbuy|target|walmart)\.com", re.I),
     ])
 
@@ -249,7 +249,7 @@ class TriagePolicy:
     ])
 
     personal_patterns: List[re.Pattern] = field(default_factory=lambda: [
-        re.compile(r"\b(contract review|project timeline|dinner plans|lunch plans|coffee|sync up|catch up|quick call|one-on-one|notes on|remodel)\b", re.I),
+        re.compile(r"\b(contract review|project timeline|dinner plans|lunch plans|(?:grab|meet for|get)\s+coffee|sync up|catch up|quick call|one-on-one|notes on|remodel)\b", re.I),
     ])
 
     # Promotional cues
