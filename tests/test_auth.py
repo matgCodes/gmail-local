@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -82,3 +82,46 @@ def test_status_reporting(tmp_path: Path):
     keyring_mock.set_password("gmail-local-retrieval", "test@example.com", "fake-refresh-token")
     status2 = manager.get_status()
     assert status2["has_keychain_token"] is True
+
+
+def test_transmission_auth_manager_defaults_and_isolation(tmp_path: Path):
+    from gmail_local.config import (
+        CLIENT_SECRET_TRANSMISSION_FILE,
+        KEYCHAIN_SERVICE_TRANSMISSION,
+        TRANSMISSION_SCOPE,
+    )
+
+    keyring_mock = FakeKeyring()
+    # Populate retrieval token
+    keyring_mock.set_password("gmail-local-retrieval", "test@example.com", "retrieval-token")
+
+    # Create transmission manager
+    trans_manager = AuthManager.for_transmission(
+        account="test@example.com",
+        keyring_backend=keyring_mock,
+    )
+
+    assert trans_manager.keychain_service == KEYCHAIN_SERVICE_TRANSMISSION
+    assert trans_manager.client_secret_path == CLIENT_SECRET_TRANSMISSION_FILE
+    assert trans_manager.scopes == [TRANSMISSION_SCOPE]
+
+    # Crucial ADR 0003 isolation test: transmission manager must NOT see the retrieval token!
+    status = trans_manager.get_status()
+    assert status["keychain_service"] == KEYCHAIN_SERVICE_TRANSMISSION
+    assert status["scope"] == TRANSMISSION_SCOPE
+    assert status["has_keychain_token"] is False  # Must be isolated from retrieval token!
+
+    # Store transmission token and verify it does NOT overwrite retrieval token
+    keyring_mock.set_password(KEYCHAIN_SERVICE_TRANSMISSION, "test@example.com", "trans-token")
+    assert trans_manager.get_status()["has_keychain_token"] is True
+    assert keyring_mock.get_password("gmail-local-retrieval", "test@example.com") == "retrieval-token"
+
+    # Revoke transmission token and verify retrieval token remains intact
+    from unittest.mock import patch
+    with patch("requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        trans_manager.revoke()
+
+    assert trans_manager.get_status()["has_keychain_token"] is False
+    assert keyring_mock.get_password("gmail-local-retrieval", "test@example.com") == "retrieval-token"
+

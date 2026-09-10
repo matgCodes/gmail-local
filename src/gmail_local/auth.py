@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import keyring
 from google.auth.transport.requests import Request
@@ -11,9 +11,12 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 from gmail_local.config import (
     CLIENT_SECRET_FILE,
+    CLIENT_SECRET_TRANSMISSION_FILE,
     DEFAULT_ACCOUNT,
     KEYCHAIN_SERVICE,
+    KEYCHAIN_SERVICE_TRANSMISSION,
     RETRIEVAL_SCOPE,
+    TRANSMISSION_SCOPE,
 )
 
 
@@ -42,11 +45,47 @@ class AuthManager:
         keychain_service: str = KEYCHAIN_SERVICE,
         account: str = DEFAULT_ACCOUNT,
         keyring_backend: Any = keyring,
+        scopes: Optional[List[str]] = None,
     ):
         self.client_secret_path = client_secret_path
         self.keychain_service = keychain_service
         self.account = account
         self.keyring = keyring_backend
+        self.scopes = scopes if scopes is not None else [RETRIEVAL_SCOPE]
+
+    @classmethod
+    def for_retrieval(
+        cls,
+        client_secret_path: Path = CLIENT_SECRET_FILE,
+        keychain_service: str = KEYCHAIN_SERVICE,
+        account: str = DEFAULT_ACCOUNT,
+        keyring_backend: Any = keyring,
+    ) -> "AuthManager":
+        """Factory creating an AuthManager bound to the read-only Retrieval Grant."""
+        return cls(
+            client_secret_path=client_secret_path,
+            keychain_service=keychain_service,
+            account=account,
+            keyring_backend=keyring_backend,
+            scopes=[RETRIEVAL_SCOPE],
+        )
+
+    @classmethod
+    def for_transmission(
+        cls,
+        client_secret_path: Path = CLIENT_SECRET_TRANSMISSION_FILE,
+        keychain_service: str = KEYCHAIN_SERVICE_TRANSMISSION,
+        account: str = DEFAULT_ACCOUNT,
+        keyring_backend: Any = keyring,
+    ) -> "AuthManager":
+        """Factory creating an AuthManager bound to the Transmission Grant (ADR 0003, ADR 0004)."""
+        return cls(
+            client_secret_path=client_secret_path,
+            keychain_service=keychain_service,
+            account=account,
+            keyring_backend=keyring_backend,
+            scopes=[TRANSMISSION_SCOPE],
+        )
 
     def load_client_config(self) -> Dict[str, Any]:
         """Loads and verifies the Desktop App client JSON configuration."""
@@ -75,7 +114,7 @@ class AuthManager:
 
         flow = InstalledAppFlow.from_client_secrets_file(
             str(self.client_secret_path),
-            scopes=[RETRIEVAL_SCOPE],
+            scopes=self.scopes,
             autogenerate_code_verifier=True,  # Enforces PKCE S256
         )
 
@@ -116,7 +155,7 @@ class AuthManager:
             token_uri=client_config["token_uri"],
             client_id=client_config["client_id"],
             client_secret=client_config.get("client_secret"),
-            scopes=[RETRIEVAL_SCOPE],
+            scopes=self.scopes,
         )
 
         # Refresh access token
@@ -137,13 +176,14 @@ class AuthManager:
             except Exception:
                 is_valid = False
 
+        scope_str = ", ".join(self.scopes) if len(self.scopes) > 1 else (self.scopes[0] if self.scopes else "")
         return {
             "account": self.account,
             "keychain_service": self.keychain_service,
             "has_client_secret": has_secret,
             "has_keychain_token": has_token,
             "is_valid": is_valid,
-            "scope": RETRIEVAL_SCOPE,
+            "scope": scope_str,
         }
 
     def revoke(self) -> bool:

@@ -256,3 +256,84 @@ def test_eval_aggregate_attachment_overflow_rejection(tmp_path: Path, adversaria
     assert "exceed 50 MiB aggregate limit" in str(excinfo.value)
     # Part 1 and Part 2 may have succeeded, but Part 3 was halted before writing
     assert not dest3.exists()
+
+
+def test_eval_draft_null_byte_rejection():
+    """Eval: Null byte injection in recipient, subject, or attachment filename must be rejected."""
+    from gmail_local.models import FrozenAttachment, FrozenDraft, FrozenDraftValidationError
+
+    # Null byte in recipient address
+    with pytest.raises(FrozenDraftValidationError, match="Null byte"):
+        FrozenDraft(to=["user@example.com\x00extra@malicious.com"], subject="Test", body_text="Hello").validate()
+
+    # Null byte in CC
+    with pytest.raises(FrozenDraftValidationError, match="Null byte"):
+        FrozenDraft(to=["user@example.com"], cc=["evil\x00@hack.net"], subject="Test", body_text="Hello").validate()
+
+    # Null byte in subject
+    with pytest.raises(FrozenDraftValidationError, match="Null byte"):
+        FrozenDraft(to=["user@example.com"], subject="Subject\x00Injected", body_text="Hello").validate()
+
+    # Null byte in attachment filename
+    with pytest.raises(FrozenDraftValidationError, match="Null byte"):
+        FrozenDraft(
+            to=["user@example.com"],
+            subject="Test",
+            body_text="Hello",
+            attachments=[
+                FrozenAttachment(
+                    filename="bad\x00file.pdf",
+                    mime_type="application/pdf",
+                    file_path="/tmp/bad.pdf",
+                    size_bytes=100,
+                    sha256="abc",
+                )
+            ],
+        ).validate()
+
+
+def test_eval_draft_recipient_delimiter_evasion():
+    """Eval: Comma or semicolon delimiters inside recipient addresses to evade recipient limits must be rejected."""
+    from gmail_local.models import FrozenDraft, FrozenDraftValidationError
+
+    # Comma delimiter evasion attempt
+    with pytest.raises(FrozenDraftValidationError, match="Delimiter character"):
+        FrozenDraft(
+            to=["user1@example.com, user2@example.com"],
+            subject="Test",
+            body_text="Hello",
+        ).validate()
+
+    # Semicolon delimiter evasion attempt
+    with pytest.raises(FrozenDraftValidationError, match="Delimiter character"):
+        FrozenDraft(
+            to=["user@example.com"],
+            cc=["user2@example.com; user3@example.com"],
+            subject="Test",
+            body_text="Hello",
+        ).validate()
+
+
+def test_eval_draft_nonexistent_and_traversal_attachment(tmp_path: Path):
+    """Eval: Missing files or malformed attachment paths must be rejected with FrozenDraftValidationError."""
+    from gmail_local.composer import create_frozen_draft
+    from gmail_local.models import FrozenDraftValidationError
+
+    # Nonexistent file
+    with pytest.raises(FrozenDraftValidationError, match="Attachment file not found"):
+        create_frozen_draft(
+            to=["user@example.com"],
+            subject="Test",
+            body_text="Hello",
+            attachment_paths=[tmp_path / "does_not_exist.pdf"],
+        )
+
+    # Null byte in file path string
+    with pytest.raises(FrozenDraftValidationError, match="Invalid attachment file path"):
+        create_frozen_draft(
+            to=["user@example.com"],
+            subject="Test",
+            body_text="Hello",
+            attachment_paths=["/tmp/bad\x00path.pdf"],
+        )
+

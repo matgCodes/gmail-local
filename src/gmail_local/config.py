@@ -6,9 +6,17 @@ from pathlib import Path
 # Scopes: Strict least-privilege retrieval only
 RETRIEVAL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
+# Scopes: Transmission & compose scope (ADR 0003, ADR 0004)
+TRANSMISSION_SCOPE = "https://www.googleapis.com/auth/gmail.compose"
+
+# Scopes: Mailbox modification & cleanup scope (ADR 0010, WAYFINDER_GMAIL_API_MODIFY_ACCESS.md)
+MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+
 # Standard Local Paths
 CONFIG_DIR = Path.home() / ".config" / "gmail-local"
 CLIENT_SECRET_FILE = CONFIG_DIR / "client_secret.json"
+CLIENT_SECRET_TRANSMISSION_FILE = CONFIG_DIR / "client_secret_transmission.json"
+CLIENT_SECRET_MODIFY_FILE = CONFIG_DIR / "client_secret_modify.json"
 
 
 def _resolve_default_account() -> str:
@@ -28,9 +36,13 @@ def _resolve_default_account() -> str:
 
 # Keychain Identifiers
 KEYCHAIN_SERVICE = "gmail-local-retrieval"
+KEYCHAIN_SERVICE_TRANSMISSION = "gmail-local-transmission"
+KEYCHAIN_SERVICE_MODIFY = "gmail-local-modify"
 DEFAULT_ACCOUNT = _resolve_default_account()
 
 STATE_DIR = Path.home() / ".local" / "state" / "gmail-local"
+DRAFTS_DIR = STATE_DIR / "drafts"
+PLANS_DIR = STATE_DIR / "plans"
 AUDIT_LOG_FILE = STATE_DIR / "audit.log"
 DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads"
 
@@ -42,6 +54,15 @@ MAX_DECODED_BODY_BYTES = 1_048_576  # 1 MiB
 
 MAX_ATTACHMENT_BYTES_PER_FILE = 26_214_400  # 25 MiB
 MAX_ATTACHMENT_BYTES_AGGREGATE = 52_428_800  # 50 MiB
+
+# Transmission Bounds (WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md)
+MAX_RECIPIENTS = 10
+MAX_TRANSMISSION_BODY_BYTES = 1_048_576  # 1 MiB
+MAX_TRANSMISSION_ATTACHMENT_BYTES_PER_FILE = 26_214_400  # 25 MiB
+MAX_TRANSMISSION_ATTACHMENT_BYTES_AGGREGATE = 52_428_800  # 50 MiB
+
+# Cleanup Bounds (WAYFINDER_GMAIL_API_MODIFY_ACCESS.md, ADR 0010)
+MAX_CLEANUP_BATCH_SIZE = 50
 
 # Audit Log Rotation Bounds (ADR 0008)
 MAX_AUDIT_LOG_BYTES = 5_242_880  # 5 MiB
@@ -65,4 +86,14 @@ METHOD_QUOTA_COSTS = {
     "users.threads.list": 10,
     "users.labels.list": 1,
     "users.labels.get": 1,
+    "users.drafts.create": 10,
+    "users.drafts.get": 10,
+    "users.drafts.list": 10,
+    "users.drafts.send": 100,
+    "users.messages.send": 100,
+    "users.messages.trash": 5,
+    "users.messages.untrash": 5,
+    "users.messages.modify": 5,
+    "users.threads.modify": 10,
+    "users.messages.batchModify": 50,
 }

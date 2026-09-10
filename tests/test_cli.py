@@ -30,6 +30,11 @@ def test_parser_subcommands_registration():
         "history",
         "thread",
         "labels",
+        "compose-status",
+        "compose-login",
+        "compose-revoke",
+        "draft",
+        "drafts",
     }
     assert expected.issubset(subcommands)
 
@@ -51,6 +56,53 @@ def test_cli_status_command(mock_retriever_cls, capsys):
     captured = capsys.readouterr()
     assert "Account:          test@example.com" in captured.out
     assert "Token Valid:      Yes" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_compose_status_command(mock_auth_cls, capsys):
+    mock_trans_auth = MagicMock()
+    mock_auth_cls.for_transmission.return_value = mock_trans_auth
+    mock_trans_auth.get_status.return_value = {
+        "account": "test@example.com",
+        "keychain_service": "gmail-local-transmission",
+        "has_client_secret": True,
+        "has_keychain_token": True,
+        "is_valid": True,
+        "scope": "https://www.googleapis.com/auth/gmail.compose",
+    }
+
+    exit_code = main(["compose-status"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "=== Gmail Local Transmission Status ===" in captured.out
+    assert "Account:          test@example.com" in captured.out
+    assert "Keychain Service: gmail-local-transmission" in captured.out
+    assert "https://www.googleapis.com/auth/gmail.compose" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_compose_login_command(mock_auth_cls, capsys):
+    mock_trans_auth = MagicMock()
+    mock_auth_cls.for_transmission.return_value = mock_trans_auth
+    mock_trans_auth.run_interactive_login.return_value = "test@example.com"
+
+    exit_code = main(["compose-login", "--no-browser"])
+    assert exit_code == 0
+    mock_trans_auth.run_interactive_login.assert_called_once_with(open_browser=False)
+    captured = capsys.readouterr()
+    assert "Successfully authorized transmission" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_compose_revoke_command(mock_auth_cls, capsys):
+    mock_trans_auth = MagicMock()
+    mock_auth_cls.for_transmission.return_value = mock_trans_auth
+
+    exit_code = main(["compose-revoke"])
+    assert exit_code == 0
+    mock_trans_auth.revoke.assert_called_once()
+    captured = capsys.readouterr()
+    assert "Successfully revoked transmission credentials" in captured.out
 
 
 @patch("gmail_local.cli.GmailRetriever")
@@ -204,3 +256,172 @@ def test_cli_labels_command(mock_retriever_cls, capsys):
     assert "Mailbox Labels (2)" in captured.out
     assert "INBOX" in captured.out
     assert "Work" in captured.out
+
+
+def test_cli_draft_command_local_only(capsys):
+    exit_code = main([
+        "draft",
+        "--to", "alice@example.com",
+        "--subject", "Local Meeting Notes",
+        "--body", "Here are the notes.",
+        "--local-only",
+    ])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "=== SEND HANDOFF ===" in captured.out
+    assert "Draft Fingerprint:" in captured.out
+    assert "alice@example.com" in captured.out
+    assert "Local Only" in captured.out
+
+
+@patch("gmail_local.cli.GmailDraftManager")
+def test_cli_draft_command_push_to_gmail(mock_dm_cls, capsys):
+    mock_dm = mock_dm_cls.return_value
+    mock_dm.save_draft.side_effect = lambda draft, purpose: draft.__class__(
+        to=draft.to,
+        subject=draft.subject,
+        body_text=draft.body_text,
+        cc=draft.cc,
+        bcc=draft.bcc,
+        body_html=draft.body_html,
+        in_reply_to=draft.in_reply_to,
+        references=draft.references,
+        attachments=draft.attachments,
+        draft_id="r-987654321",
+    )
+
+    exit_code = main([
+        "draft",
+        "--to", "alice@example.com",
+        "--subject", "Cloud Draft Notes",
+        "--body", "Body content.",
+    ])
+    assert exit_code == 0
+    mock_dm.save_draft.assert_called_once()
+    captured = capsys.readouterr()
+    assert "=== SEND HANDOFF ===" in captured.out
+    assert "r-987654321" in captured.out
+    assert "Staged to Gmail Drafts" in captured.out
+
+
+@patch("gmail_local.cli.GmailDraftManager")
+def test_cli_drafts_list_command(mock_dm_cls, capsys):
+    mock_dm = mock_dm_cls.return_value
+    mock_dm.list_drafts.return_value = [
+        {"id": "r-1", "message": {"id": "m-1"}},
+        {"id": "r-2", "message": {"id": "m-2"}},
+    ]
+
+    exit_code = main(["drafts", "list", "--limit", "5"])
+    assert exit_code == 0
+    mock_dm.list_drafts.assert_called_once_with(max_results=5, purpose="list_drafts")
+    captured = capsys.readouterr()
+    assert "Found 2 draft(s)" in captured.out
+    assert "r-1" in captured.out
+    assert "r-2" in captured.out
+
+
+@patch("sys.stdin.isatty", return_value=False)
+def test_cli_send_non_interactive_without_confirm_fails(mock_isatty, capsys, tmp_path: Path):
+    from gmail_local.composer import create_frozen_draft, save_draft_locally
+    draft = create_frozen_draft(
+        to=["target@example.com"],
+        subject="Non-interactive Send Test",
+        body_text="Testing send without confirm.",
+    )
+    save_draft_locally(draft, drafts_dir=tmp_path)
+    fp = draft.compute_fingerprint()
+
+    with patch("gmail_local.cli.DRAFTS_DIR", tmp_path):
+        exit_code = main(["send", "--draft", fp])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Manual Send Gate" in captured.err
+    assert "--confirm" in captured.err
+
+
+@patch("sys.stdin.isatty", return_value=False)
+@patch("gmail_local.cli.GmailSender")
+def test_cli_send_with_confirm_succeeds(mock_sender_cls, mock_isatty, capsys, tmp_path: Path):
+    from gmail_local.composer import create_frozen_draft, save_draft_locally
+    mock_sender = mock_sender_cls.return_value
+    mock_sender.send.return_value = {
+        "id": "sent_12345",
+        "threadId": "th_12345",
+        "draft_id": None,
+        "fingerprint": "mock_fp",
+    }
+
+    draft = create_frozen_draft(
+        to=["target@example.com"],
+        subject="Confirmed Send Test",
+        body_text="Testing confirmed send.",
+    )
+    save_draft_locally(draft, drafts_dir=tmp_path)
+    fp = draft.compute_fingerprint()
+
+    with patch("gmail_local.cli.DRAFTS_DIR", tmp_path):
+        exit_code = main(["send", "--draft", fp, "--confirm"])
+    assert exit_code == 0
+    mock_sender.send.assert_called_once()
+    captured = capsys.readouterr()
+    assert "TRANSMISSION RECEIPT" in captured.out
+    assert "sent_12345" in captured.out
+
+
+@patch("sys.stdin.isatty", return_value=True)
+@patch("builtins.input", return_value="no")
+def test_cli_send_interactive_denied(mock_input, mock_isatty, capsys, tmp_path: Path):
+    from gmail_local.composer import create_frozen_draft, save_draft_locally
+    draft = create_frozen_draft(
+        to=["target@example.com"],
+        subject="Interactive Denial Test",
+        body_text="Testing user abort.",
+    )
+    save_draft_locally(draft, drafts_dir=tmp_path)
+    fp = draft.compute_fingerprint()
+
+    with patch("gmail_local.cli.DRAFTS_DIR", tmp_path):
+        exit_code = main(["send", "--draft", fp])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Transmission aborted" in captured.err
+
+
+@patch("sys.stdin.isatty", return_value=True)
+@patch("builtins.input", return_value="yes")
+@patch("gmail_local.cli.GmailSender")
+def test_cli_send_interactive_accepted(mock_sender_cls, mock_input, mock_isatty, capsys, tmp_path: Path):
+    from gmail_local.composer import create_frozen_draft, save_draft_locally
+    mock_sender = mock_sender_cls.return_value
+    mock_sender.send.return_value = {
+        "id": "sent_interactive_999",
+        "threadId": "th_999",
+        "draft_id": None,
+        "fingerprint": "mock_fp",
+    }
+
+    draft = create_frozen_draft(
+        to=["target@example.com"],
+        subject="Interactive Acceptance Test",
+        body_text="Testing user confirmation.",
+    )
+    save_draft_locally(draft, drafts_dir=tmp_path)
+    fp = draft.compute_fingerprint()
+
+    with patch("gmail_local.cli.DRAFTS_DIR", tmp_path):
+        exit_code = main(["send", "--draft", fp])
+    assert exit_code == 0
+    mock_sender.send.assert_called_once()
+    captured = capsys.readouterr()
+    assert "TRANSMISSION RECEIPT" in captured.out
+    assert "sent_interactive_999" in captured.out
+
+
+def test_cli_send_draft_not_found(capsys, tmp_path: Path):
+    with patch("gmail_local.cli.DRAFTS_DIR", tmp_path):
+        exit_code = main(["send", "--draft", "unknown_identifier_12345", "--confirm"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Draft not found" in captured.err
+

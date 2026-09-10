@@ -72,3 +72,6 @@ class AuditLogger:
                 os.chmod(self.log_path, 0o600)
             except OSError:
                 pass
+
+    log_entry = record
+

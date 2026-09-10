@@ -174,3 +174,109 @@ class TestRateLimiterPropertyInvariants:
         # Invariant: Total acquired units must never exceed 500
         current = limiter.current_units_in_window(now=fixed_now)
         assert current <= 500
+
+
+@pytest.mark.property
+class TestTransmissionPropertyInvariants:
+    """Hypothesis generative invariant tests for FrozenDraft and MIME composition."""
+
+    email_strategy = st.from_regex(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", fullmatch=True)
+
+    @given(
+        st.lists(email_strategy, min_size=1, max_size=5, unique=True),
+        st.text(min_size=1, max_size=50).filter(lambda s: "\r" not in s and "\n" not in s and s.strip()),
+        st.text(min_size=1, max_size=500),
+    )
+    @settings(max_examples=50)
+    def test_fingerprint_normalization_and_commutativity(
+        self, emails: List[str], subject: str, body: str
+    ) -> None:
+        """Permuting recipient order, casing, or surrounding whitespace must not change fingerprint."""
+        from gmail_local.models import FrozenDraft
+        import random
+
+        # Original
+        d1 = FrozenDraft(to=emails, subject=subject, body_text=body)
+        fp1 = d1.compute_fingerprint()
+
+        # Permuted order with randomized case and whitespace
+        permuted_emails = []
+        for e in emails:
+            cased = "".join(c.upper() if random.random() > 0.5 else c.lower() for c in e)
+            padded = f"  {cased}  "
+            permuted_emails.append(padded)
+        random.shuffle(permuted_emails)
+
+        d2 = FrozenDraft(to=permuted_emails, subject=f" {subject} ", body_text=body)
+        fp2 = d2.compute_fingerprint()
+
+        assert fp1 == fp2
+        assert len(fp1) == 64
+
+    @given(
+        st.text(
+            alphabet=st.characters(blacklist_categories=("Cs",), blacklist_characters="\r\n\x00,;"),
+            min_size=0,
+            max_size=30,
+        ),
+        st.sampled_from(["\r", "\n", "\r\n", "\n\r"]),
+        st.text(
+            alphabet=st.characters(blacklist_categories=("Cs",), blacklist_characters="\r\n\x00,;"),
+            min_size=0,
+            max_size=30,
+        ),
+    )
+    @settings(max_examples=50)
+    def test_crlf_rejection_invariant(self, prefix: str, crlf: str, suffix: str) -> None:
+        """Any carriage return or newline in subject or addresses must strictly fail validation."""
+        from gmail_local.models import FrozenDraft, FrozenDraftValidationError
+
+        crlf_str = f"{prefix}{crlf}{suffix}"
+
+        # In subject
+        with pytest.raises(FrozenDraftValidationError, match="CRLF"):
+            FrozenDraft(to=["user@example.com"], subject=crlf_str, body_text="hello").validate()
+
+        # In recipient
+        with pytest.raises(FrozenDraftValidationError, match="CRLF"):
+            FrozenDraft(to=[f"user{crlf_str}@example.com"], subject="Valid Subject", body_text="hello").validate()
+
+    @given(
+        st.integers(min_value=11, max_value=50),
+    )
+    @settings(max_examples=20)
+    def test_recipient_bound_invariant(self, recipient_count: int) -> None:
+        """Exceeding 10 recipients must always raise FrozenDraftValidationError."""
+        from gmail_local.models import FrozenDraft, FrozenDraftValidationError
+
+        recipients = [f"user{i}@example.com" for i in range(recipient_count)]
+        draft = FrozenDraft(to=recipients, subject="Hi", body_text="Hello")
+        with pytest.raises(FrozenDraftValidationError, match="exceeds maximum bound of 10"):
+            draft.validate()
+
+    @given(
+        st.text(min_size=1, max_size=2000),
+    )
+    @settings(max_examples=40)
+    def test_mime_roundtrip_payload_integrity(self, body_text: str) -> None:
+        """Arbitrary unicode text in body must round-trip through base64url payload perfectly."""
+        import base64
+        from email import message_from_bytes
+        from email.policy import default
+        from gmail_local.composer import build_draft_payload
+        from gmail_local.models import FrozenDraft
+
+        draft = FrozenDraft(to=["user@example.com"], subject="Unicode Test", body_text=body_text)
+        payload = build_draft_payload(draft)
+
+        raw_str = payload["message"]["raw"]
+        padding = 4 - (len(raw_str) % 4)
+        if padding and padding < 4:
+            raw_str += "=" * padding
+
+        decoded_bytes = base64.urlsafe_b64decode(raw_str)
+        reconstructed = message_from_bytes(decoded_bytes, policy=default)
+
+        # Invariant: Extracted text matches original text after RFC 5322 line ending normalization
+        expected_body = body_text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+        assert reconstructed.get_content().rstrip("\r\n") == expected_body

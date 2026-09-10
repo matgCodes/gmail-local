@@ -103,3 +103,30 @@ _Avoid_: Confirmation, auto-send
 **Sender**:
 The stable local program that verifies and transmits one Frozen Draft after the Manual Send Gate.
 _Avoid_: Generated script, Drafting Agent
+
+## Modification & Cleanup
+
+**Modification Milestone**:
+The separately authorized delivery stage that adds staged cleanup planning, label modification, and guarded soft-deletion after explicit Operator execution.
+_Avoid_: Phase three, delete feature
+
+**Modification Grant**:
+The Operator's separate Gmail authorization limited to `gmail.modify` and never merged with retrieval or transmission credentials.
+_Avoid_: Modify token, combined credential
+
+**Cleanup Plan**:
+An immutable mailbox mutation package whose query, target message IDs, and specific actions (trash, archive, label) are bound to one deterministic fingerprint.
+_Avoid_: Bulk deletion script, cleanup queue
+
+**Cleanup Handoff**:
+The complete presentation of a Cleanup Plan, its fingerprint, affected message count and sample subjects, and the exact CLI command the Operator may run.
+_Avoid_: Auto-clean trigger, deletion prompt
+
+**Manual Modify Gate**:
+The boundary at which mailbox mutations become authorized only when the Operator independently executes the cleanup command for a specific Cleanup Plan.
+_Avoid_: Confirmation bypass, auto-scrub
+
+**Soft Delete**:
+Moving a targeted message to Gmail's Trash (`users.messages.trash`) where it is retained for 30 days and remains fully recoverable, as opposed to unrecoverable permanent deletion.
+_Avoid_: Hard delete, purge, wipe
+
