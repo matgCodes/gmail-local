@@ -9,6 +9,7 @@ for work inside this project.
 - Read `WAYFINDER_GMAIL_API_READ_ACCESS.md` for retrieval scope, decisions, and completed gates.
 - Read `WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md` for outbound drafting, Frozen Draft contracts, and transmission gates.
 - Read `WAYFINDER_GMAIL_API_MODIFY_ACCESS.md` for mailbox modification, staged cleanup plans, and modify gates.
+- Read `WAYFINDER_INBOX_TRIAGE_PIPELINE.md` for autonomous AFK triage policies, evaluation benchmarks, and staged plan partitioning.
 - Read `docs/agent-cookbook.md` before executing retrieval tasks. It documents
   Gmail search syntax, PST date evaluation, MIME multipart handling, and the
   3-stage retrieval workflow.

@@ -244,6 +244,11 @@ class FrozenDraft:
         serialized = json.dumps(self.canonical_dict(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
+    @property
+    def fingerprint(self) -> str:
+        """Returns the computed cryptographic SHA-256 fingerprint."""
+        return self.compute_fingerprint()
+
     def to_dict(self) -> Dict[str, Any]:
         """Returns standard dictionary representation for persistence and IPC."""
         return {
@@ -380,6 +385,11 @@ class CleanupPlan:
         """Generates SHA-256 fingerprint of the canonical JSON representation."""
         serialized = json.dumps(self.canonical_dict(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    @property
+    def fingerprint(self) -> str:
+        """Returns the computed cryptographic SHA-256 fingerprint."""
+        return self.compute_fingerprint()
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes CleanupPlan to a dictionary."""

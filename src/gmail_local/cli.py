@@ -31,6 +31,13 @@ from gmail_local.modifier import (
 )
 from gmail_local.retrieval import GmailRetriever, RetrievalBoundError
 from gmail_local.sender import GmailSender
+from gmail_local.triage import (
+    TriageAction,
+    TriageCategory,
+    TriageClassifier,
+    TriageDecision,
+    TriagePlanGenerator,
+)
 
 
 def cmd_status(retriever: GmailRetriever, args: argparse.Namespace) -> int:
@@ -511,6 +518,142 @@ def cmd_cleanup(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_triage_scan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Scan candidate messages, classify via triage policy, and display categorized breakdown."""
+    try:
+        candidates = retriever.search_messages(
+            query=args.query,
+            max_results=args.limit,
+            purpose=args.purpose,
+        )
+        if not candidates:
+            print(f"No messages matched triage query: '{args.query}'")
+            return 0
+
+        classifier = TriageClassifier()
+        decisions: List[TriageDecision] = []
+        for c in candidates:
+            decision = classifier.classify(
+                message_id=c.id,
+                thread_id=c.thread_id,
+                sender=c.sender,
+                subject=c.subject,
+                date=c.date,
+            )
+            decisions.append(decision)
+
+        # Count by category & action
+        action_counts = {TriageAction.TRASH: 0, TriageAction.ARCHIVE: 0, TriageAction.KEEP: 0}
+        category_counts: dict[str, int] = {}
+        for d in decisions:
+            action_counts[d.action] = action_counts.get(d.action, 0) + 1
+            cat_name = d.category.value
+            category_counts[cat_name] = category_counts.get(cat_name, 0) + 1
+
+        print("=" * 78)
+        print("  INBOX TRIAGE POLICY SCAN BREAKDOWN")
+        print("=" * 78)
+        print(f"Query:           {args.query}")
+        print(f"Scanned:         {len(decisions)} messages")
+        print(f"Action Summary:  TRASH: {action_counts[TriageAction.TRASH]} | ARCHIVE: {action_counts[TriageAction.ARCHIVE]} | KEEP/PROTECT: {action_counts[TriageAction.KEEP]}")
+        print("-" * 78)
+        print("Category Distribution:")
+        for cat, cnt in sorted(category_counts.items(), key=lambda x: x[1], reverse=True):
+            print(f"  - {cat:25s}: {cnt:3d} messages")
+        print("-" * 78)
+
+        print("Detailed Candidate Decisions:")
+        for i, d in enumerate(decisions, 1):
+            action_badge = f"[{d.action.value.upper()}]"
+            prot_badge = "[PROTECTED]" if d.is_protected else ""
+            print(f"[{i:02d}] {action_badge:9s} {prot_badge:11s} ID: {d.message_id}")
+            print(f"     From:    {d.sender}")
+            print(f"     Subject: {d.subject}")
+            print(f"     Reason:  {d.reason} (rule: {d.rule_name})")
+            print("-" * 78)
+
+        print("AFK Triage scan complete. To generate staged execution plans, run:")
+        print(f"  gmail-local triage plan --query \"{args.query}\" --limit {args.limit} --action trash")
+        return 0
+    except Exception as e:
+        print(f"Triage scan failed with error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_triage_plan(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Scan candidate messages and generate partitioned CleanupPlan artifacts."""
+    try:
+        candidates = retriever.search_messages(
+            query=args.query,
+            max_results=args.limit,
+            purpose=args.purpose,
+        )
+        if not candidates:
+            print(f"No messages matched triage query: '{args.query}'")
+            return 0
+
+        classifier = TriageClassifier()
+        decisions: List[TriageDecision] = []
+        for c in candidates:
+            decision = classifier.classify(
+                message_id=c.id,
+                thread_id=c.thread_id,
+                sender=c.sender,
+                subject=c.subject,
+                date=c.date,
+            )
+            decisions.append(decision)
+
+        target_action = TriageAction.TRASH if args.action == "trash" else TriageAction.ARCHIVE
+        generator = TriagePlanGenerator()
+        plans = generator.generate_staged_plans(
+            decisions=decisions,
+            action_filter=target_action,
+            max_batch_size=50,
+            query=args.query,
+        )
+
+        if not plans:
+            print(f"No candidates matched action '{args.action}' after applying triage safety rules.")
+            return 0
+
+        print("=" * 78)
+        print(f"  GENERATED {len(plans)} STAGED CLEANUP PLAN(S) VIA TRIAGE ENGINE")
+        print("=" * 78)
+        total_targets = sum(len(p.targets) for p in plans)
+        print(f"Target Action:  {target_action.value.upper()}")
+        print(f"Total Targets:  {total_targets} across {len(plans)} bundle(s) (<= 50 items/bundle)")
+        print("-" * 78)
+
+        for idx, plan in enumerate(plans, 1):
+            print(f"Bundle [{idx}/{len(plans)}]:")
+            print(f"  Fingerprint: {plan.fingerprint}")
+            print(f"  Targets:     {len(plan.targets)}")
+            print(f"  Plan File:   ~/.local/state/gmail-local/plans/{plan.fingerprint}.json")
+            print(f"  Preview:     gmail-local cleanup preview {plan.fingerprint}")
+            print(f"  Apply:       gmail-local cleanup apply --plan {plan.fingerprint} --confirm")
+            print("-" * 78)
+
+        print("All plans staged safely. Execute via Manual Modify Gate when ready.")
+        return 0
+    except Exception as e:
+        print(f"Triage plan generation failed with error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_triage(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Entrypoint for triage subcommands."""
+    sub = getattr(args, "triage_subcommand", None)
+    if sub == "scan":
+        return cmd_triage_scan(retriever, args)
+    elif sub == "plan":
+        return cmd_triage_plan(retriever, args)
+    else:
+        print("Specify a triage subcommand: scan or plan", file=sys.stderr)
+        return 1
+
+
+
 def cmd_search(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     """Search messages and display bounded header-level candidate results."""
     try:
@@ -794,6 +937,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_cl_untrash.set_defaults(func=cmd_cleanup_untrash)
 
     p_cleanup.set_defaults(func=cmd_cleanup)
+
+    # triage
+    p_triage = subparsers.add_parser("triage", help="Autonomous AFK inbox triage and staged classification")
+    p_triage_sub = p_triage.add_subparsers(dest="triage_subcommand")
+
+    p_tr_scan = p_triage_sub.add_parser("scan", help="Scan candidates and display categorized triage breakdown")
+    p_tr_scan.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
+    p_tr_scan.add_argument("--limit", type=int, default=25, help="Candidates to inspect (1-75)")
+    p_tr_scan.add_argument("--purpose", default="triage_scan", help="Operator-stated purpose for audit log")
+    p_tr_scan.set_defaults(func=cmd_triage_scan)
+
+    p_tr_plan = p_triage_sub.add_parser("plan", help="Scan candidates and generate partitioned CleanupPlan artifacts")
+    p_tr_plan.add_argument("--query", default="in:inbox", help="Search query (default: in:inbox)")
+    p_tr_plan.add_argument("--limit", type=int, default=50, help="Candidates to inspect (1-75)")
+    p_tr_plan.add_argument("--action", choices=["trash", "archive"], default="trash", help="Target action to stage into plans")
+    p_tr_plan.add_argument("--purpose", default="triage_plan", help="Operator-stated purpose for audit log")
+    p_tr_plan.set_defaults(func=cmd_triage_plan)
+
+    p_triage.set_defaults(func=cmd_triage)
 
     # draft
     p_draft = subparsers.add_parser("draft", help="Compose a FrozenDraft and optionally stage to Gmail Drafts")

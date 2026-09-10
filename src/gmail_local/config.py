@@ -43,6 +43,7 @@ DEFAULT_ACCOUNT = _resolve_default_account()
 STATE_DIR = Path.home() / ".local" / "state" / "gmail-local"
 DRAFTS_DIR = STATE_DIR / "drafts"
 PLANS_DIR = STATE_DIR / "plans"
+TRIAGE_DIR = STATE_DIR / "triage"
 AUDIT_LOG_FILE = STATE_DIR / "audit.log"
 DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads"
 

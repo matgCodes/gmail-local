@@ -2,7 +2,7 @@
 
 A locally operated, read-only Gmail capability providing least-privilege search, message reading, and attachment downloads for personal Gmail accounts.
 
-Governed by [WAYFINDER_GMAIL_API_READ_ACCESS.md](WAYFINDER_GMAIL_API_READ_ACCESS.md), [WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md](WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md), and [AGENTS.md](AGENTS.md).
+Governed by [WAYFINDER_GMAIL_API_READ_ACCESS.md](WAYFINDER_GMAIL_API_READ_ACCESS.md), [WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md](WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md), [WAYFINDER_GMAIL_API_MODIFY_ACCESS.md](WAYFINDER_GMAIL_API_MODIFY_ACCESS.md), [WAYFINDER_INBOX_TRIAGE_PIPELINE.md](WAYFINDER_INBOX_TRIAGE_PIPELINE.md), and [AGENTS.md](AGENTS.md).
 
 ---
 
@@ -31,7 +31,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Run test suite (165 tests, 100% offline mock execution)
+# Run test suite (214 tests, 100% offline mock execution)
 pytest -v
 ```
 
@@ -163,6 +163,25 @@ gmail-local cleanup untrash <message-id>
 gmail-local modify-revoke
 ```
 
+### Autonomous AFK Inbox Triage (`triage`)
+
+Designed for large mailboxes (>100k messages). Analyzes message headers, enforces zero false-positive protection for sensitive messages (financial, receipts, 2FA, travel, personal), and partitions candidate mutations into fingerprinted `CleanupPlan` bundles (<= 50 items/bundle):
+
+```bash
+# 1. Non-destructive scan: evaluate candidate messages and view category breakdown
+gmail-local triage scan --query "in:inbox" --limit 50
+
+# 2. Generate partitioned staged plans for trash candidates
+gmail-local triage plan --query "in:inbox" --limit 50 --action trash
+
+# 3. Generate partitioned staged plans for archive candidates
+gmail-local triage plan --query "in:inbox" --limit 50 --action archive
+
+# 4. Preview and confirm execution via Manual Modify Gate
+gmail-local cleanup preview <plan-fingerprint>
+gmail-local cleanup apply --plan <plan-fingerprint> --confirm
+```
+
 ---
 
 ## Hardening & Security Evaluations
@@ -170,7 +189,7 @@ gmail-local modify-revoke
 Run the comprehensive unit test suite and security evaluation benchmarks:
 
 ```bash
-# Run all 192 tests (170 unit & property + 22 security evals)
+# Run all 214 tests (182 unit & property + 32 security and triage policy evals)
 .venv/bin/pytest
 
 # Run dedicated evaluation benchmark runner
