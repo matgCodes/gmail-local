@@ -170,3 +170,65 @@ def test_modification_auth_manager_defaults_and_isolation(tmp_path: Path):
     assert keyring_mock.get_password("gmail-local-transmission", "test@example.com") == "transmission-token"
 
 
+def test_calendar_auth_manager_defaults_and_isolation(tmp_path: Path):
+    from gmail_local.config import (
+        CALENDAR_SCOPE,
+        KEYCHAIN_SERVICE_CALENDAR,
+    )
+
+    keyring_mock = FakeKeyring()
+    # Populate existing tokens across other services
+    keyring_mock.set_password("gmail-local-retrieval", "test@example.com", "retrieval-token")
+    keyring_mock.set_password("gmail-local-transmission", "test@example.com", "transmission-token")
+    keyring_mock.set_password("gmail-local-modify", "test@example.com", "modify-token")
+
+    # 1. Test fallback to client_secret_meet.json when calendar secret doesn't exist
+    cal_secret = tmp_path / "client_secret_calendar.json"
+    meet_secret = tmp_path / "client_secret_meet.json"
+    meet_secret.write_text(json.dumps({"installed": {"client_id": "meet-c1", "token_uri": "uri"}}))
+
+    with patch("gmail_local.auth.CLIENT_SECRET_CALENDAR_FILE", cal_secret), \
+         patch("gmail_local.auth.CLIENT_SECRET_MEET_FILE", meet_secret):
+        cal_manager = AuthManager.for_calendar(
+            account="test@example.com",
+            keyring_backend=keyring_mock,
+        )
+        assert cal_manager.client_secret_path == meet_secret
+
+    # 2. Test preference for client_secret_calendar.json when it does exist
+    cal_secret.write_text(json.dumps({"installed": {"client_id": "cal-c1", "token_uri": "uri"}}))
+    with patch("gmail_local.auth.CLIENT_SECRET_CALENDAR_FILE", cal_secret), \
+         patch("gmail_local.auth.CLIENT_SECRET_MEET_FILE", meet_secret):
+        cal_manager2 = AuthManager.for_calendar(
+            account="test@example.com",
+            keyring_backend=keyring_mock,
+        )
+        assert cal_manager2.client_secret_path == cal_secret
+
+    # 3. Verify scope and keychain service isolation
+    assert cal_manager.keychain_service == KEYCHAIN_SERVICE_CALENDAR
+    assert cal_manager.scopes == [CALENDAR_SCOPE]
+
+    status = cal_manager.get_status()
+    assert status["keychain_service"] == KEYCHAIN_SERVICE_CALENDAR
+    assert status["scope"] == CALENDAR_SCOPE
+    assert status["has_keychain_token"] is False
+
+    # Store calendar token and verify other services are isolated
+    keyring_mock.set_password(KEYCHAIN_SERVICE_CALENDAR, "test@example.com", "cal-token")
+    assert cal_manager.get_status()["has_keychain_token"] is True
+    assert keyring_mock.get_password("gmail-local-retrieval", "test@example.com") == "retrieval-token"
+    assert keyring_mock.get_password("gmail-local-transmission", "test@example.com") == "transmission-token"
+    assert keyring_mock.get_password("gmail-local-modify", "test@example.com") == "modify-token"
+
+    # Revoke calendar token
+    with patch("requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        cal_manager.revoke()
+
+    assert cal_manager.get_status()["has_keychain_token"] is False
+    assert keyring_mock.get_password("gmail-local-retrieval", "test@example.com") == "retrieval-token"
+    assert keyring_mock.get_password("gmail-local-transmission", "test@example.com") == "transmission-token"
+    assert keyring_mock.get_password("gmail-local-modify", "test@example.com") == "modify-token"
+
+

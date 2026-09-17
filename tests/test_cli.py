@@ -36,6 +36,10 @@ def test_parser_subcommands_registration():
         "compose-revoke",
         "draft",
         "drafts",
+        "calendar-status",
+        "calendar-login",
+        "calendar-revoke",
+        "calendar-event",
     }
     assert expected.issubset(subcommands)
 
@@ -648,3 +652,118 @@ def test_cli_cleanup_untrash_command(mock_mod_cls, capsys):
     captured = capsys.readouterr()
     assert "Restored message 'msg_restore_99' from Trash" in captured.out
 
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_calendar_status_command(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_calendar.return_value
+    mock_auth.client_secret_path = Path("/path/to/client_secret_calendar.json")
+    mock_auth.get_status.return_value = {
+        "account": "user@example.com",
+        "keychain_service": "gmail-local-calendar",
+        "has_client_secret": True,
+        "has_keychain_token": True,
+        "is_valid": True,
+        "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+    }
+
+    exit_code = main(["calendar-status"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "=== Gmail Local Calendar Status ===" in captured.out
+    assert "Account:          user@example.com" in captured.out
+    assert "gmail-local-calendar" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_calendar_login_command(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_calendar.return_value
+    mock_auth.run_interactive_login.return_value = "user@example.com"
+
+    exit_code = main(["calendar-login", "--no-browser"])
+    assert exit_code == 0
+    mock_auth.run_interactive_login.assert_called_once_with(open_browser=False)
+    captured = capsys.readouterr()
+    assert "Successfully authorized calendar" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_calendar_revoke_command(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_calendar.return_value
+
+    exit_code = main(["calendar-revoke"])
+    assert exit_code == 0
+    mock_auth.revoke.assert_called_once()
+    captured = capsys.readouterr()
+    assert "Successfully revoked calendar credentials" in captured.out
+
+
+def test_cli_calendar_event_preview(capsys):
+    exit_code = main([
+        "calendar-event",
+        "preview",
+        "--summary", "Executive Planning",
+        "--start", "2026-09-22T10:00:00-07:00",
+        "--end", "2026-09-22T10:30:00-07:00",
+        "--timezone", "America/Los_Angeles",
+        "--attendee", "alice@example.com",
+        "--meet",
+        "--send-updates", "all",
+    ])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "CALENDAR EVENT HANDOFF" in captured.out
+    assert "Executive Planning" in captured.out
+    assert "Google Meet:        ENABLED" in captured.out
+    assert "Send Updates:       ALL" in captured.out
+
+
+@patch("sys.stdin.isatty", return_value=False)
+def test_cli_calendar_event_create_gate_violation(mock_isatty, capsys):
+    exit_code = main([
+        "calendar-event",
+        "create",
+        "--summary", "Executive Planning",
+        "--start", "2026-09-22T10:00:00-07:00",
+        "--end", "2026-09-22T10:30:00-07:00",
+        "--timezone", "America/Los_Angeles",
+    ])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Manual Action Gate violation" in captured.err
+    assert "--confirm" in captured.err
+
+
+@patch("sys.stdin.isatty", return_value=False)
+@patch("gmail_local.cli.CalendarManager")
+def test_cli_calendar_event_create_with_confirm_succeeds(mock_cal_cls, mock_isatty, capsys):
+    from gmail_local.models import CalendarEvent, ConferenceData
+    mock_cal = mock_cal_cls.return_value
+    mock_cal.create_event.return_value = CalendarEvent(
+        id="evt_success_1",
+        summary="Executive Planning",
+        start="2026-09-22T10:00:00-07:00",
+        end="2026-09-22T10:30:00-07:00",
+        timezone="America/Los_Angeles",
+        html_link="https://calendar.google.com/event?eid=123",
+        conference=ConferenceData(
+            uri="https://meet.google.com/abc-defg-hij",
+            conference_id="abc-defg-hij",
+        ),
+    )
+
+    exit_code = main([
+        "calendar-event",
+        "create",
+        "--summary", "Executive Planning",
+        "--start", "2026-09-22T10:00:00-07:00",
+        "--end", "2026-09-22T10:30:00-07:00",
+        "--timezone", "America/Los_Angeles",
+        "--meet",
+        "--confirm",
+    ])
+    assert exit_code == 0
+    mock_cal.create_event.assert_called_once()
+    captured = capsys.readouterr()
+    assert "CALENDAR EVENT CREATION RECEIPT" in captured.out
+    assert "evt_success_1" in captured.out
+    assert "https://meet.google.com/abc-defg-hij" in captured.out

@@ -10,11 +10,15 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from gmail_local.config import (
+    CALENDAR_SCOPE,
+    CLIENT_SECRET_CALENDAR_FILE,
     CLIENT_SECRET_FILE,
+    CLIENT_SECRET_MEET_FILE,
     CLIENT_SECRET_MODIFY_FILE,
     CLIENT_SECRET_TRANSMISSION_FILE,
     DEFAULT_ACCOUNT,
     KEYCHAIN_SERVICE,
+    KEYCHAIN_SERVICE_CALENDAR,
     KEYCHAIN_SERVICE_MODIFY,
     KEYCHAIN_SERVICE_TRANSMISSION,
     MODIFY_SCOPE,
@@ -107,6 +111,30 @@ class AuthManager:
             scopes=[MODIFY_SCOPE],
         )
 
+    @classmethod
+    def for_calendar(
+        cls,
+        client_secret_path: Optional[Path] = None,
+        keychain_service: str = KEYCHAIN_SERVICE_CALENDAR,
+        account: str = DEFAULT_ACCOUNT,
+        keyring_backend: Any = keyring,
+    ) -> "AuthManager":
+        """Factory creating an AuthManager bound to the Calendar Grant (Issue #1)."""
+        if client_secret_path is None:
+            if CLIENT_SECRET_CALENDAR_FILE.exists():
+                client_secret_path = CLIENT_SECRET_CALENDAR_FILE
+            elif CLIENT_SECRET_MEET_FILE.exists():
+                client_secret_path = CLIENT_SECRET_MEET_FILE
+            else:
+                client_secret_path = CLIENT_SECRET_CALENDAR_FILE
+        return cls(
+            client_secret_path=client_secret_path,
+            keychain_service=keychain_service,
+            account=account,
+            keyring_backend=keyring_backend,
+            scopes=[CALENDAR_SCOPE],
+        )
+
     def load_client_config(self) -> Dict[str, Any]:
         """Loads and verifies the Desktop App client JSON configuration."""
         if not self.client_secret_path.exists():
@@ -163,9 +191,14 @@ class AuthManager:
         """Retrieves refresh token from Keychain and refreshes access token if needed."""
         refresh_token = self.keyring.get_password(self.keychain_service, self.account)
         if not refresh_token:
+            cmd_suggestion = {
+                KEYCHAIN_SERVICE_TRANSMISSION: "compose-login",
+                KEYCHAIN_SERVICE_MODIFY: "modify-login",
+                KEYCHAIN_SERVICE_CALENDAR: "calendar-login",
+            }.get(self.keychain_service, "login")
             raise MissingTokenError(
                 f"No refresh token found in Keychain for service '{self.keychain_service}', "
-                f"account '{self.account}'. Run 'gmail-local login' to authorize."
+                f"account '{self.account}'. Run 'gmail-local {cmd_suggestion}' to authorize."
             )
 
         client_config = self.load_client_config()["installed"]

@@ -344,3 +344,81 @@ def test_cleanup_plan_serialization_roundtrip_and_handoff():
     assert "Weekly Digest" in handoff
 
 
+def test_audit_entry_with_event_id():
+    entry = AuditEntry(
+        operation="calendar_event_create",
+        purpose="create_event",
+        status="SUCCESS",
+        event_id="cal_evt_12345",
+        fingerprint="fp12345",
+        details="attendees=2_has_meet=True",
+    )
+    line = entry.to_log_line()
+    assert "op=calendar_event_create" in line
+    assert "status=SUCCESS" in line
+    assert "eid=cal_evt_12345" in line
+    assert "fp=fp12345" in line
+    assert "details=attendees=2_has_meet=True" in line
+
+
+def test_calendar_domain_models():
+    from gmail_local.models import (
+        Attendee,
+        CalendarEvent,
+        CalendarPreview,
+        ConferenceData,
+    )
+
+    attendee = Attendee(email="user@example.com")
+    assert attendee.email == "user@example.com"
+    assert attendee.response_status == "needsAction"
+
+    conf = ConferenceData(
+        uri="https://meet.google.com/abc-defg-hij",
+        conference_id="abc-defg-hij",
+        entry_point_type="video",
+        status="success",
+        label="meet.google.com/abc-defg-hij",
+    )
+    assert conf.uri == "https://meet.google.com/abc-defg-hij"
+    assert conf.conference_id == "abc-defg-hij"
+
+    event = CalendarEvent(
+        id="evt123",
+        summary="Team Sync",
+        description="Weekly planning",
+        start="2026-09-22T10:00:00-07:00",
+        end="2026-09-22T10:30:00-07:00",
+        timezone="America/Los_Angeles",
+        attendees=[attendee],
+        has_meet=True,
+        conference=conf,
+        html_link="https://www.google.com/calendar/event?eid=...",
+    )
+
+    fp = event.compute_fingerprint()
+    assert isinstance(fp, str)
+    assert len(fp) == 64
+
+    # Serialization round-trip
+    d = event.to_dict()
+    restored = CalendarEvent.from_dict(d)
+    assert restored.id == event.id
+    assert restored.summary == event.summary
+    assert restored.start == event.start
+    assert restored.end == event.end
+    assert restored.timezone == event.timezone
+    assert len(restored.attendees) == 1
+    assert restored.attendees[0].email == "user@example.com"
+    assert restored.has_meet is True
+    assert restored.conference is not None
+    assert restored.conference.uri == conf.uri
+    assert restored.compute_fingerprint() == fp
+
+    # Preview model
+    preview = CalendarPreview(event=event, send_updates="none", handoff_markdown="### Preview")
+    assert preview.event == event
+    assert preview.send_updates == "none"
+    assert preview.handoff_markdown == "### Preview"
+
+

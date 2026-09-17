@@ -20,11 +20,22 @@ from gmail_local.config import (
     MAX_SEARCH_BOUND,
     PLANS_DIR,
 )
+from gmail_local.calendar import (
+    CalendarConferenceError,
+    CalendarError,
+    CalendarManager,
+    CalendarValidationError,
+    ManualActionGateViolationError,
+)
 from gmail_local.models import (
+    Attendee,
+    CalendarEvent,
+    CalendarPreview,
     CleanupAction,
     CleanupPlan,
     CleanupPlanValidationError,
     CleanupTarget,
+    ConferenceData,
     FrozenDraft,
     FrozenDraftValidationError,
 )
@@ -188,6 +199,145 @@ def cmd_modify_revoke(retriever: GmailRetriever, args: argparse.Namespace) -> in
     except Exception as e:
         print(f"Modification revocation error: {e}", file=sys.stderr)
         return 1
+
+
+def cmd_calendar_status(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Report calendar authorization status without exposing token secrets."""
+    secret_path = getattr(args, "client_secret", None)
+    auth = (
+        AuthManager.for_calendar(client_secret_path=secret_path)
+        if secret_path
+        else AuthManager.for_calendar()
+    )
+    status = auth.get_status()
+    print("=== Gmail Local Calendar Status ===")
+    print(f"Account:          {status['account']}")
+    print(f"Keychain Service: {status['keychain_service']}")
+    print(f"Client Secret:    {'Found' if status['has_client_secret'] else 'Missing (~/.config/gmail-local/client_secret_calendar.json or client_secret_meet.json)'}")
+    print(f"Keychain Token:   {'Present' if status['has_keychain_token'] else 'Not stored (run calendar-login)'}")
+    print(f"Token Valid:      {'Yes (active & refreshable)' if status['is_valid'] else 'No'}")
+    print(f"Scope:            {status['scope']}")
+    return 0 if status["is_valid"] else 1
+
+
+def cmd_calendar_login(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Execute interactive OAuth login for calendar (calendar.events.owned) with PKCE."""
+    print("Initiating Calendar OAuth login flow with Google...")
+    print("A browser window will open requesting consent for 'calendar.events.owned'.")
+    secret_path = getattr(args, "client_secret", None)
+    auth = (
+        AuthManager.for_calendar(client_secret_path=secret_path)
+        if secret_path
+        else AuthManager.for_calendar()
+    )
+    try:
+        account = auth.run_interactive_login(open_browser=not args.no_browser)
+        print(f"Successfully authorized calendar and stored refresh token in Keychain for {account}!")
+        return 0
+    except AuthError as e:
+        print(f"Calendar authorization error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_calendar_revoke(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Revoke calendar authorization and clear calendar Keychain entry."""
+    print("Revoking Calendar OAuth token and clearing Keychain entry...")
+    auth = AuthManager.for_calendar()
+    try:
+        auth.revoke()
+        print("Successfully revoked calendar credentials and removed from Keychain.")
+        return 0
+    except Exception as e:
+        print(f"Calendar revocation error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_calendar_event_preview(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Preview a Calendar event and generate standard handoff markdown."""
+    manager = CalendarManager()
+    try:
+        preview = manager.preview_event(
+            summary=args.summary,
+            start_iso=args.start,
+            end_iso=args.end,
+            timezone_str=args.timezone,
+            description=args.description,
+            attendees=args.attendees,
+            has_meet=args.meet,
+            send_updates=args.send_updates,
+        )
+        print(preview.handoff_markdown)
+        return 0
+    except Exception as e:
+        print(f"Calendar event preview error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_calendar_event_create(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Create a Calendar event behind Manual Action Gate."""
+    manager = CalendarManager()
+    try:
+        preview = manager.preview_event(
+            summary=args.summary,
+            start_iso=args.start,
+            end_iso=args.end,
+            timezone_str=args.timezone,
+            description=args.description,
+            attendees=args.attendees,
+            has_meet=args.meet,
+            send_updates=args.send_updates,
+        )
+    except Exception as e:
+        print(f"Calendar event validation error: {e}", file=sys.stderr)
+        return 1
+
+    event = preview.event
+
+    if not args.confirm:
+        if not sys.stdin.isatty():
+            print(
+                "Manual Action Gate violation: Calendar event creation in non-interactive environment requires explicit --confirm flag.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            print(preview.handoff_markdown)
+            user_input = input("Type 'yes' to authorize calendar event creation: ")
+            if user_input.strip().lower() != "yes":
+                print("Event creation aborted by operator.", file=sys.stderr)
+                return 1
+        except (KeyboardInterrupt, EOFError):
+            print("\nEvent creation aborted by operator.", file=sys.stderr)
+            return 1
+
+    try:
+        created = manager.create_event(
+            event=event,
+            send_updates=args.send_updates,
+            confirm=True,
+        )
+        print("\n======================= CALENDAR EVENT CREATION RECEIPT =======================")
+        print("Status:          SUCCESS")
+        print(f"Event ID:        {created.id}")
+        print(f"Summary:         {created.summary}")
+        print(f"Start:           {created.start} ({created.timezone})")
+        print(f"End:             {created.end} ({created.timezone})")
+        print(f"HTML Link:       {created.html_link or 'N/A'}")
+        print(f"Google Meet:     {created.conference.uri if created.conference else 'None'}")
+        print(f"Conference ID:   {created.conference.conference_id if created.conference else 'None'}")
+        print(f"Attendees:       {len(created.attendees)} recipient(s)")
+        print(f"Send Updates:    {args.send_updates.upper()}")
+        print("==============================================================================")
+        return 0
+    except Exception as e:
+        print(f"Calendar event creation failed: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_calendar_event(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Entry point when no calendar-event subcommand is given."""
+    print("Usage: gmail-local calendar-event [preview|create] [options]")
+    return 0
 
 
 def cmd_draft(retriever: GmailRetriever, args: argparse.Namespace) -> int:
@@ -1208,6 +1358,44 @@ def build_parser() -> argparse.ArgumentParser:
     # modify-revoke
     p_mod_revoke = subparsers.add_parser("modify-revoke", help="Revoke modification authorization and clear Keychain entry")
     p_mod_revoke.set_defaults(func=cmd_modify_revoke)
+
+    # calendar-status
+    p_cal_status = subparsers.add_parser("calendar-status", help="Check Calendar Grant status")
+    p_cal_status.add_argument("--client-secret", type=Path, default=None, help="Path to calendar client secret JSON")
+    p_cal_status.set_defaults(func=cmd_calendar_status)
+
+    # calendar-login
+    p_cal_login = subparsers.add_parser("calendar-login", help="Run interactive OAuth2 login for Calendar (calendar.events.owned)")
+    p_cal_login.add_argument("--client-secret", type=Path, default=None, help="Path to calendar client secret JSON")
+    p_cal_login.add_argument("--no-browser", action="store_true", help="Do not automatically launch system browser")
+    p_cal_login.set_defaults(func=cmd_calendar_login)
+
+    # calendar-revoke
+    p_cal_revoke = subparsers.add_parser("calendar-revoke", help="Revoke calendar authorization and clear Keychain entry")
+    p_cal_revoke.set_defaults(func=cmd_calendar_revoke)
+
+    # calendar-event
+    p_cal_event = subparsers.add_parser("calendar-event", help="Preview or create Google Calendar events with Google Meet")
+    p_cal_event_sub = p_cal_event.add_subparsers(dest="calendar_event_subcommand")
+
+    for sub_name, sub_help, sub_func in [
+        ("preview", "Preview a Calendar event and generate dry-run handoff", cmd_calendar_event_preview),
+        ("create", "Create a Calendar event on primary calendar under Manual Action Gate", cmd_calendar_event_create),
+    ]:
+        p_sub = p_cal_event_sub.add_parser(sub_name, help=sub_help)
+        p_sub.add_argument("--summary", required=True, help="Title or summary of the event")
+        p_sub.add_argument("--start", required=True, help="Start time in ISO 8601 format (e.g. 2026-09-22T10:00:00-07:00)")
+        p_sub.add_argument("--end", required=True, help="End time in ISO 8601 format (e.g. 2026-09-22T10:35:00-07:00)")
+        p_sub.add_argument("--timezone", required=True, help="IANA timezone (e.g. America/Los_Angeles)")
+        p_sub.add_argument("--description", default=None, help="Optional event description")
+        p_sub.add_argument("--attendee", action="append", default=[], dest="attendees", help="Attendee email address (max 10)")
+        p_sub.add_argument("--meet", action="store_true", default=False, help="Enable Google Meet conference generation")
+        p_sub.add_argument("--send-updates", choices=["none", "externalOnly", "all"], default="none", help="Send email notifications")
+        if sub_name == "create":
+            p_sub.add_argument("--confirm", action="store_true", default=False, help="Explicit human confirmation for non-interactive execution")
+        p_sub.add_argument("--purpose", default=f"calendar_event_{sub_name}", help="Operator-stated purpose for audit log")
+        p_sub.set_defaults(func=sub_func)
+    p_cal_event.set_defaults(func=cmd_calendar_event)
 
     # cleanup
     p_cleanup = subparsers.add_parser("cleanup", help="Staged mailbox modification and cleanup")

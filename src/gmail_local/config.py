@@ -12,11 +12,16 @@ TRANSMISSION_SCOPE = "https://www.googleapis.com/auth/gmail.compose"
 # Scopes: Mailbox modification & cleanup scope (ADR 0010, WAYFINDER_GMAIL_API_MODIFY_ACCESS.md)
 MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 
+# Scopes: Calendar event creation & Google Meet integration (Issue #1)
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned"
+
 # Standard Local Paths
 CONFIG_DIR = Path.home() / ".config" / "gmail-local"
 CLIENT_SECRET_FILE = CONFIG_DIR / "client_secret.json"
 CLIENT_SECRET_TRANSMISSION_FILE = CONFIG_DIR / "client_secret_transmission.json"
 CLIENT_SECRET_MODIFY_FILE = CONFIG_DIR / "client_secret_modify.json"
+CLIENT_SECRET_CALENDAR_FILE = CONFIG_DIR / "client_secret_calendar.json"
+CLIENT_SECRET_MEET_FILE = CONFIG_DIR / "client_secret_meet.json"
 
 
 def _resolve_default_account() -> str:
@@ -38,6 +43,7 @@ def _resolve_default_account() -> str:
 KEYCHAIN_SERVICE = "gmail-local-retrieval"
 KEYCHAIN_SERVICE_TRANSMISSION = "gmail-local-transmission"
 KEYCHAIN_SERVICE_MODIFY = "gmail-local-modify"
+KEYCHAIN_SERVICE_CALENDAR = "gmail-local-calendar"
 DEFAULT_ACCOUNT = _resolve_default_account()
 
 STATE_DIR = Path.home() / ".local" / "state" / "gmail-local"
@@ -61,6 +67,9 @@ MAX_RECIPIENTS = 10
 MAX_TRANSMISSION_BODY_BYTES = 1_048_576  # 1 MiB
 MAX_TRANSMISSION_ATTACHMENT_BYTES_PER_FILE = 26_214_400  # 25 MiB
 MAX_TRANSMISSION_ATTACHMENT_BYTES_AGGREGATE = 52_428_800  # 50 MiB
+
+# Calendar Bounds (Issue #1)
+MAX_EVENT_ATTENDEES = 10
 
 # Cleanup Bounds (WAYFINDER_GMAIL_API_MODIFY_ACCESS.md, ADR 0010, ADR 0013)
 MAX_CLEANUP_BATCH_SIZE = 75
@@ -97,4 +106,6 @@ METHOD_QUOTA_COSTS = {
     "users.messages.modify": 5,
     "users.threads.modify": 10,
     "users.messages.batchModify": 50,
+    "events.insert": 10,
+    "events.get": 5,
 }

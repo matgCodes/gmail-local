@@ -65,6 +65,7 @@ class AuditEntry:
     status: str
     message_id: Optional[str] = None
     draft_id: Optional[str] = None
+    event_id: Optional[str] = None
     fingerprint: Optional[str] = None
     filename: Optional[str] = None
     destination: Optional[str] = None
@@ -84,6 +85,8 @@ class AuditEntry:
             fields.append(f"mid={self.message_id}")
         if self.draft_id:
             fields.append(f"did={self.draft_id}")
+        if self.event_id:
+            fields.append(f"eid={self.event_id}")
         if self.fingerprint:
             fields.append(f"fp={self.fingerprint}")
         if self.filename:
@@ -543,3 +546,139 @@ class CleanupPlan:
         ])
         return "\n".join(lines)
 
+
+@dataclass(frozen=True)
+class Attendee:
+    """Attendee for a Calendar event."""
+    email: str
+    response_status: str = "needsAction"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "email": self.email,
+            "responseStatus": self.response_status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Attendee":
+        return cls(
+            email=data["email"],
+            response_status=data.get("responseStatus", data.get("response_status", "needsAction")),
+        )
+
+
+@dataclass(frozen=True)
+class ConferenceData:
+    """Google Meet conference entry details."""
+    uri: str
+    conference_id: str
+    entry_point_type: str = "video"
+    status: str = "success"
+    label: Optional[str] = None
+    phone_uri: Optional[str] = None
+    phone_pin: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "uri": self.uri,
+            "conference_id": self.conference_id,
+            "entry_point_type": self.entry_point_type,
+            "status": self.status,
+        }
+        if self.label is not None:
+            d["label"] = self.label
+        if self.phone_uri is not None:
+            d["phone_uri"] = self.phone_uri
+        if self.phone_pin is not None:
+            d["phone_pin"] = self.phone_pin
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ConferenceData":
+        return cls(
+            uri=data["uri"],
+            conference_id=data["conference_id"],
+            entry_point_type=data.get("entry_point_type", "video"),
+            status=data.get("status", "success"),
+            label=data.get("label"),
+            phone_uri=data.get("phone_uri"),
+            phone_pin=data.get("phone_pin"),
+        )
+
+
+@dataclass(frozen=True)
+class CalendarEvent:
+    """Domain model for a Google Calendar event."""
+    id: str
+    summary: str
+    start: str
+    end: str
+    timezone: str
+    description: Optional[str] = None
+    attendees: List[Attendee] = field(default_factory=list)
+    has_meet: bool = True
+    html_link: Optional[str] = None
+    conference: Optional[ConferenceData] = None
+    fingerprint: Optional[str] = None
+
+    def compute_fingerprint(self) -> str:
+        """Deterministic SHA-256 fingerprint from canonical attributes."""
+        canonical_obj = {
+            "summary": self.summary.strip(),
+            "start": self.start.strip(),
+            "end": self.end.strip(),
+            "timezone": self.timezone.strip(),
+            "attendees": sorted(a.email.strip().lower() for a in self.attendees),
+            "has_meet": self.has_meet,
+        }
+        raw_json = json.dumps(canonical_obj, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "id": self.id,
+            "summary": self.summary,
+            "start": self.start,
+            "end": self.end,
+            "timezone": self.timezone,
+            "has_meet": self.has_meet,
+            "attendees": [a.to_dict() for a in self.attendees],
+        }
+        if self.description is not None:
+            d["description"] = self.description
+        if self.html_link is not None:
+            d["html_link"] = self.html_link
+        if self.conference is not None:
+            d["conference"] = self.conference.to_dict()
+        if self.fingerprint is not None:
+            d["fingerprint"] = self.fingerprint
+        else:
+            d["fingerprint"] = self.compute_fingerprint()
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CalendarEvent":
+        attendees = [Attendee.from_dict(a) for a in data.get("attendees", [])]
+        conf_data = data.get("conference")
+        conf = ConferenceData.from_dict(conf_data) if conf_data else None
+        return cls(
+            id=data["id"],
+            summary=data["summary"],
+            start=data["start"],
+            end=data["end"],
+            timezone=data["timezone"],
+            description=data.get("description"),
+            attendees=attendees,
+            has_meet=data.get("has_meet", True),
+            html_link=data.get("html_link"),
+            conference=conf,
+            fingerprint=data.get("fingerprint"),
+        )
+
+
+@dataclass(frozen=True)
+class CalendarPreview:
+    """Staged dry-run preview and handoff artifact for a calendar event."""
+    event: CalendarEvent
+    send_updates: str = "none"
+    handoff_markdown: str = ""
