@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -44,6 +45,16 @@ class SelectedMessage:
     body_text: str
     body_bytes: int
     attachments: List[AttachmentDescriptor] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ReplyMetadata:
+    """Header-only context required to bind a draft to an existing Gmail thread."""
+    gmail_message_id: str
+    thread_id: str
+    rfc_message_id: str
+    references: Tuple[str, ...]
+    subject: str
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,14 @@ class LabelInfo:
     messages_unread: Optional[int] = None
 
 
+class AttachmentMode(str, Enum):
+    """Supported attachment presentation and compatibility modes."""
+    AUTO = "auto"
+    SNAPSHOT = "snapshot"
+    COMPATIBILITY = "compatibility"
+    INVITATION = "invitation"
+
+
 class FrozenDraftValidationError(ValueError):
     """Raised when a FrozenDraft violates security bounds or formatting constraints."""
 
@@ -136,6 +155,7 @@ class FrozenDraft:
     cc: List[str] = field(default_factory=list)
     bcc: List[str] = field(default_factory=list)
     body_html: Optional[str] = None
+    thread_id: Optional[str] = None
     in_reply_to: Optional[str] = None
     references: List[str] = field(default_factory=list)
     attachments: List[FrozenAttachment] = field(default_factory=list)
@@ -146,6 +166,8 @@ class FrozenDraft:
 
     def validate(self) -> None:
         """Validates safety bounds and CRLF header injection protections."""
+        from email.message import EmailMessage
+        from pathlib import Path
         from gmail_local.config import (
             MAX_RECIPIENTS,
             MAX_TRANSMISSION_BODY_BYTES,
@@ -187,7 +209,27 @@ class FrozenDraft:
         if not self.subject.strip():
             raise FrozenDraftValidationError("Subject must not be empty.")
 
-        # 3. Payload size bounds
+        # 3. Thread-binding values are fingerprinted and must be safe RFC headers.
+        message_id_pattern = re.compile(r"^<[^<>\s]+>$")
+        if self.thread_id is not None:
+            if not self.thread_id.strip():
+                raise FrozenDraftValidationError("Thread ID must not be empty.")
+            if any(char in self.thread_id for char in ("\x00", "\r", "\n")):
+                raise FrozenDraftValidationError("Invalid control character in thread ID.")
+            if not self.in_reply_to or not self.references:
+                raise FrozenDraftValidationError(
+                    "A thread-bound draft requires In-Reply-To and References headers."
+                )
+
+        if self.in_reply_to is not None and not message_id_pattern.fullmatch(self.in_reply_to):
+            raise FrozenDraftValidationError("In-Reply-To must be one RFC Message-ID value.")
+        for reference in self.references:
+            if not message_id_pattern.fullmatch(reference):
+                raise FrozenDraftValidationError(
+                    "Each References entry must be one RFC Message-ID value."
+                )
+
+        # 4. Payload size bounds
         body_bytes = len(self.body_text.encode("utf-8"))
         if self.body_html:
             body_bytes += len(self.body_html.encode("utf-8"))
@@ -196,7 +238,7 @@ class FrozenDraft:
                 f"Aggregate message body ({body_bytes} bytes) exceeds maximum bound of {MAX_TRANSMISSION_BODY_BYTES} bytes."
             )
 
-        # 4. Attachment bounds
+        # 5. Attachment bounds
         agg_att_bytes = 0
         for att in self.attachments:
             if "\x00" in att.filename:
@@ -213,6 +255,35 @@ class FrozenDraft:
                 )
             agg_att_bytes += att.size_bytes
 
+            # Validate calendar media-type parameters per RFC 5545 §3.1.4 and RFC 6047 §2.4
+            temp_msg = EmailMessage()
+            temp_msg["Content-Type"] = att.mime_type
+            maintype = temp_msg.get_content_maintype()
+            subtype = temp_msg.get_content_subtype()
+            params = dict(temp_msg.get_params()[1:]) if temp_msg.get_params() else {}
+            params_lower = {k.lower(): v for k, v in params.items()}
+
+            if f"{maintype}/{subtype}".lower() == "text/calendar":
+                if "charset" not in params_lower or not params_lower["charset"]:
+                    raise FrozenDraftValidationError(
+                        f"Calendar attachment '{att.filename}' with Content-Type 'text/calendar' "
+                        "must specify charset (e.g. 'text/calendar; charset=UTF-8') per RFC 5545 §3.1.4."
+                    )
+                if "method" in params_lower and params_lower["method"]:
+                    method_param = params_lower["method"].strip().upper()
+                    if att.file_path and Path(att.file_path).exists():
+                        try:
+                            content_str = Path(att.file_path).read_text(encoding="utf-8", errors="replace")
+                            method_match = re.search(r"(?m)^METHOD:([A-Za-z0-9_-]+)", content_str, re.IGNORECASE)
+                            if not method_match or method_match.group(1).upper() != method_param:
+                                found_method = method_match.group(1).upper() if method_match else "NONE"
+                                raise FrozenDraftValidationError(
+                                    f"Calendar invitation attachment '{att.filename}' has MIME method='{method_param}', "
+                                    f"which does not match VCALENDAR METHOD property ('{found_method}')."
+                                )
+                        except OSError:
+                            pass
+
         if agg_att_bytes > MAX_TRANSMISSION_ATTACHMENT_BYTES_AGGREGATE:
             raise FrozenDraftValidationError(
                 f"Aggregate attachment size ({agg_att_bytes} bytes) exceeds aggregate bound of {MAX_TRANSMISSION_ATTACHMENT_BYTES_AGGREGATE} bytes."
@@ -227,6 +298,7 @@ class FrozenDraft:
             "subject": self.subject.strip(),
             "body_text": self.body_text,
             "body_html": self.body_html,
+            "thread_id": self.thread_id,
             "in_reply_to": self.in_reply_to,
             "references": sorted(self.references),
             "attachments": [
@@ -259,6 +331,7 @@ class FrozenDraft:
             "cc": list(self.cc),
             "bcc": list(self.bcc),
             "body_html": self.body_html,
+            "thread_id": self.thread_id,
             "in_reply_to": self.in_reply_to,
             "references": list(self.references),
             "attachments": [
@@ -295,6 +368,7 @@ class FrozenDraft:
             cc=list(data.get("cc", [])),
             bcc=list(data.get("bcc", [])),
             body_html=data.get("body_html"),
+            thread_id=data.get("thread_id"),
             in_reply_to=data.get("in_reply_to"),
             references=list(data.get("references", [])),
             attachments=attachments,
@@ -468,5 +542,4 @@ class CleanupPlan:
             "========================================================================",
         ])
         return "\n".join(lines)
-
 

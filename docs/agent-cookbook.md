@@ -163,3 +163,30 @@ Before deploying or after making modifications, always run the evaluation suite 
 | **Overwrite Policy** | No overwrite | Strictly forbidden | Fails with `OverwriteError` if target file exists. |
 | **Quota Budget** | 3,000 units / 60s | 3,000 units / 60s | Call pauses or raises `RateLimitExceededError`. |
 | **In-Flight Requests** | 4 concurrent | 4 concurrent | Throttled via internal semaphore. |
+
+---
+
+## 9. Outbound Attachment Presentation Modes & Verifiable Delivery Claims
+
+When drafting outbound emails with attachments (especially `.ics` calendar files):
+
+### Attachment Presentation Modes
+1. **Calendar Snapshot (`--attach-mode snapshot` / default for `.ics`):**
+   * Uses `Content-Type: text/calendar; charset=UTF-8` with attachment disposition and `.ics` filename.
+   * Method-free (omits `method` parameter) per RFC 5545 §3.1.4 and RFC 6047 §2.4.
+   * Represents a standalone downloadable calendar snapshot; does not trigger iMIP invitation processing.
+2. **Downloadable File Compatibility Mode (`--attach-mode compatibility`):**
+   * Uses `Content-Type: application/octet-stream` while preserving the exact `.ics` filename and binary bytes.
+   * Avoids calendar-specific MIME handler suppression in web clients that handle `text/calendar` specially.
+3. **Calendar Invitation (`--attach-mode invitation`):**
+   * Uses `Content-Type: text/calendar; charset=UTF-8; method=REQUEST`.
+   * Requires matching `METHOD:REQUEST` in the VCALENDAR body payload; mismatches are rejected.
+
+### Verifiable Delivery Claims vs. UI Rendering
+CLI receipts and audit entries distinguish verifiable stages:
+* **Local Attachment Integrity:** Verified before drafting and sending (digest and file size match disk).
+* **Remote Draft Readback:** Verified by reading the staged draft's raw MIME from Gmail (`users.drafts.get(format=RAW)`) and comparing semantic headers, attachment count, filenames, media types, sizes, and SHA-256 digests.
+* **Gmail Send API Acceptance:** Verified by HTTP 200 response returning sent `id` and `threadId`.
+* **Stored Sent Raw Message:** Verified by retrieving the message's stored RFC 2822 payload (`get_raw_message`).
+* **Recipient/UI Presentation:** **Not programmatically verified.** A receiving client's web UI may choose to present `text/calendar` parts differently from generic binary attachments based on `Content-Type` rather than filename.
+

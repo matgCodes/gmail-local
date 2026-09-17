@@ -218,6 +218,28 @@ def cmd_draft(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         body_html = args.html
 
     try:
+        thread_id = getattr(args, "thread_id", None)
+        in_reply_to = getattr(args, "in_reply_to", None)
+        references = getattr(args, "references", None)
+        reply_to_message_id = getattr(args, "reply_to_message_id", None)
+        if reply_to_message_id:
+            if thread_id or in_reply_to or references:
+                raise FrozenDraftValidationError(
+                    "--reply-to-message-id cannot be combined with manual thread headers."
+                )
+            reply_metadata = retriever.get_reply_metadata(
+                reply_to_message_id,
+                purpose=f"{args.purpose}_thread_context",
+            )
+            if args.subject.strip() != reply_metadata.subject.strip():
+                raise FrozenDraftValidationError(
+                    "Guaranteed threaded replies require the subject to exactly match "
+                    f"the selected message subject: {reply_metadata.subject}"
+                )
+            thread_id = reply_metadata.thread_id
+            in_reply_to = reply_metadata.rfc_message_id
+            references = list(reply_metadata.references)
+
         draft = create_frozen_draft(
             to=args.to,
             subject=args.subject,
@@ -225,9 +247,11 @@ def cmd_draft(retriever: GmailRetriever, args: argparse.Namespace) -> int:
             cc=getattr(args, "cc", None),
             bcc=getattr(args, "bcc", None),
             body_html=body_html,
-            in_reply_to=getattr(args, "in_reply_to", None),
-            references=getattr(args, "references", None),
+            thread_id=thread_id,
+            in_reply_to=in_reply_to,
+            references=references,
             attachment_paths=getattr(args, "attach", None),
+            attachment_mode=getattr(args, "attach_mode", "auto"),
         )
 
         staging_info = "Local Only"
@@ -256,6 +280,8 @@ def cmd_draft(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         if draft.bcc:
             print(f"Recipients (Bcc): {', '.join(draft.bcc)}")
         print(f"Subject:          {draft.subject}")
+        if draft.thread_id:
+            print(f"Thread ID:        {draft.thread_id}")
         if draft.attachments:
             att_names = ", ".join(f"{a.filename} ({a.size_bytes} B)" for a in draft.attachments)
             print(f"Attachments:      {att_names}")
@@ -269,7 +295,7 @@ def cmd_draft(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         print("====================")
         return 0
 
-    except (FrozenDraftValidationError, AuthError) as e:
+    except (FrozenDraftValidationError, RetrievalBoundError, AuthError) as e:
         print(f"Draft creation error: {e}", file=sys.stderr)
         return 1
     except Exception as e:
@@ -352,13 +378,22 @@ def cmd_send(retriever: GmailRetriever, args: argparse.Namespace) -> int:
         sender = GmailSender()
         result = sender.send(draft, purpose=args.purpose)
         print("\n========================== TRANSMISSION RECEIPT ==========================")
-        print("Status:         SENT")
-        print(f"Message ID:     {result['id']}")
-        print(f"Thread ID:      {result['threadId']}")
+        print("Status:                     SENT")
+        print(f"Message ID:                 {result['id']}")
+        print(f"Thread ID:                  {result['threadId']}")
         if result.get("draft_id"):
-            print(f"Draft ID:       {result['draft_id']}")
-        print(f"Fingerprint:    {result['fingerprint']}")
-        print(f"Timestamp:      {datetime.now(timezone.utc).isoformat()}")
+            print(f"Draft ID:                   {result['draft_id']}")
+        print(f"Fingerprint:                {result['fingerprint']}")
+        print(f"Timestamp:                  {datetime.now(timezone.utc).isoformat()}")
+        print("\n--- Delivery Verification Summary ---")
+        print("Local Attachment Integrity: VERIFIED (Digest & size match local disk)")
+        if result.get("draft_id"):
+            print("Remote Draft Readback:      VERIFIED (Raw MIME tree & payload match Frozen Draft)")
+        else:
+            print("Remote Draft Readback:      N/A (Unstaged direct send)")
+        print(f"Gmail Send API Acceptance:  ACCEPTED (API accepted transmission; returned ID: {result['id']})")
+        print("Stored Sent Raw Message:    PENDING RETRIEVAL INSPECTION (Query stored raw via 'read' or API)")
+        print("Recipient/UI Presentation:  NOT PROGRAMMATICALLY VERIFIED (Client UI rendering depends on mail user agent)")
         print("==========================================================================")
         return 0
     except (FrozenDraftValidationError, AuthError) as e:
@@ -1270,8 +1305,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_draft.add_argument("--html", help="HTML alternative body text")
     p_draft.add_argument("--html-file", help="Path to HTML file containing body")
     p_draft.add_argument("--attach", nargs="*", default=[], help="Local file paths to attach")
+    p_draft.add_argument(
+        "--attach-mode",
+        choices=["auto", "snapshot", "compatibility", "invitation"],
+        default="auto",
+        help="Attachment presentation mode (default: auto; for .ics: snapshot=text/calendar, compatibility=application/octet-stream, invitation=method=REQUEST)",
+    )
+    p_draft.add_argument("--thread-id", help="Gmail thread ID for a guaranteed threaded reply")
     p_draft.add_argument("--in-reply-to", help="Message-ID this draft replies to")
     p_draft.add_argument("--references", nargs="*", default=[], help="Message-ID reference chain")
+    p_draft.add_argument(
+        "--reply-to-message-id",
+        help="Selected Gmail message ID; securely resolves all required thread headers",
+    )
     p_draft.add_argument("--local-only", action="store_true", help="Generate local FrozenDraft without pushing to Gmail")
     p_draft.add_argument("--purpose", default="compose_draft", help="Operator-stated purpose for audit log")
     p_draft.set_defaults(func=cmd_draft)

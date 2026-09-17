@@ -85,6 +85,38 @@ def test_read_bound_rejects_more_than_10_messages(mock_audit, mock_rate_limiter)
         retriever.get_messages(["msg_" + str(i) for i in range(11)])
 
 
+def test_get_reply_metadata_returns_guaranteed_thread_context(mock_audit, mock_rate_limiter):
+    mock_service = MagicMock()
+    mock_service.users().messages().get().execute.return_value = {
+        "id": "m1",
+        "threadId": "thread-123",
+        "payload": {
+            "headers": [
+                {"name": "Message-ID", "value": "<parent-123@example.com>"},
+                {"name": "References", "value": "<root-001@example.com> <prior-002@example.com>"},
+                {"name": "Subject", "value": "Re: Threaded Subject"},
+            ]
+        },
+    }
+    retriever = GmailRetriever(
+        audit_logger=mock_audit,
+        rate_limiter=mock_rate_limiter,
+        service=mock_service,
+    )
+
+    metadata = retriever.get_reply_metadata("m1")
+
+    assert metadata.gmail_message_id == "m1"
+    assert metadata.thread_id == "thread-123"
+    assert metadata.rfc_message_id == "<parent-123@example.com>"
+    assert metadata.references == (
+        "<root-001@example.com>",
+        "<prior-002@example.com>",
+        "<parent-123@example.com>",
+    )
+    assert metadata.subject == "Re: Threaded Subject"
+
+
 def test_read_bound_discards_overflow_body_at_1_mib(mock_audit, mock_rate_limiter):
     mock_service = MagicMock()
 
@@ -396,3 +428,67 @@ def test_list_labels(mock_audit, mock_rate_limiter):
     assert labels[3].type == "user"
     assert labels[2].name == "Personal"  # alphabetical within user
     assert labels[3].name == "Work"
+
+
+def test_list_attachments_walks_mime_tree_without_attachment_id(mock_audit, mock_rate_limiter):
+    mock_service = MagicMock()
+    cal_bytes = b"BEGIN:VCALENDAR\r\nSUMMARY:Meeting\r\nEND:VCALENDAR\r\n"
+    b64_cal = base64.urlsafe_b64encode(cal_bytes).decode("utf-8")
+
+    mock_service.users().messages().get().execute.return_value = {
+        "id": "msg_cal_01",
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": base64.urlsafe_b64encode(b"Body text").decode("utf-8")},
+                },
+                {
+                    "mimeType": "text/calendar; charset=UTF-8",
+                    "headers": [
+                        {"name": "Content-Disposition", "value": "attachment; filename=\"invite.ics\""},
+                        {"name": "Content-Type", "value": "text/calendar; charset=UTF-8"},
+                    ],
+                    "body": {"data": b64_cal, "size": len(cal_bytes)},
+                    # No attachmentId present
+                },
+            ],
+        },
+    }
+
+    retriever = GmailRetriever(
+        audit_logger=mock_audit,
+        rate_limiter=mock_rate_limiter,
+        service=mock_service,
+    )
+
+    attachments = retriever.list_attachments("msg_cal_01")
+    assert len(attachments) == 1
+    att = attachments[0]
+    assert att.filename == "invite.ics"
+    assert att.mime_type == "text/calendar; charset=UTF-8"
+    assert att.size_bytes == len(cal_bytes)
+
+
+def test_get_raw_message(mock_audit, mock_rate_limiter):
+    mock_service = MagicMock()
+    raw_email_bytes = b"From: alice@example.com\r\nTo: bob@example.com\r\nSubject: Test\r\n\r\nHello raw world!"
+    b64_raw = base64.urlsafe_b64encode(raw_email_bytes).decode("utf-8")
+
+    mock_service.users().messages().get().execute.return_value = {
+        "id": "msg_raw_01",
+        "raw": b64_raw,
+    }
+
+    retriever = GmailRetriever(
+        audit_logger=mock_audit,
+        rate_limiter=mock_rate_limiter,
+        service=mock_service,
+    )
+
+    msg = retriever.get_raw_message("msg_raw_01")
+    assert msg["From"] == "alice@example.com"
+    assert msg["Subject"] == "Test"
+    assert msg.get_content().strip() == "Hello raw world!"
+

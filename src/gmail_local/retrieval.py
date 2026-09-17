@@ -31,6 +31,7 @@ from gmail_local.models import (
     CandidateMessage,
     HistoryDelta,
     LabelInfo,
+    ReplyMetadata,
     SelectedMessage,
     ThreadSummary,
 )
@@ -280,16 +281,43 @@ class GmailRetriever:
     ) -> Optional[AttachmentDescriptor]:
         """Extracts an AttachmentDescriptor if the part contains a file attachment."""
         raw_filename = part.get("filename", "")
+        headers = extract_header_map(part)
+        disp_header = headers.get("content-disposition", "")
+
+        # If filename wasn't in part root, check Content-Disposition header
+        if not raw_filename and disp_header:
+            fn_match = re.search(r'filename=["\']?([^"\';\r\n]+)["\']?', disp_header, re.IGNORECASE)
+            if fn_match:
+                raw_filename = fn_match.group(1).strip()
+
         body = part.get("body", {})
         attachment_id = body.get("attachmentId")
-        if raw_filename and (attachment_id or "data" in body):
+        size = body.get("size", 0)
+        has_data = "data" in body
+
+        is_attachment_disp = "attachment" in disp_header.lower()
+        mime_type = part.get("mimeType", "")
+        is_calendar = "text/calendar" in mime_type.lower()
+
+        if (raw_filename or is_attachment_disp or attachment_id or (is_calendar and has_data)) and (attachment_id or has_data or size > 0):
+            fallback = "event.ics" if is_calendar else "attachment"
+            effective_filename = sanitize_filename(raw_filename or fallback)
+            calc_size = size
+            if calc_size == 0 and has_data:
+                try:
+                    data_str = body["data"]
+                    pad = (4 - len(data_str) % 4) % 4
+                    calc_size = len(base64.urlsafe_b64decode(data_str + ("=" * pad)))
+                except Exception:
+                    calc_size = 0
+
             return AttachmentDescriptor(
                 message_id=message_id,
                 attachment_id=attachment_id or "inline",
-                filename=sanitize_filename(raw_filename),
-                mime_type=part.get("mimeType", ""),
-                size_bytes=body.get("size", 0),
-                is_inline=bool("data" in body and not attachment_id),
+                filename=effective_filename,
+                mime_type=mime_type,
+                size_bytes=calc_size,
+                is_inline=bool(has_data and not attachment_id and not is_attachment_disp),
             )
         return None
 
@@ -430,6 +458,68 @@ class GmailRetriever:
             )
 
         return selected
+
+    def get_reply_metadata(
+        self,
+        message_id: str,
+        purpose: str = "reply_metadata",
+    ) -> ReplyMetadata:
+        """Retrieve only the headers needed for a guaranteed Gmail-thread reply."""
+        if not message_id or not message_id.strip():
+            raise RetrievalBoundError("A selected Gmail message ID is required.")
+        if any(char in message_id for char in ("\x00", "\r", "\n")):
+            raise RetrievalBoundError("Invalid control character in Gmail message ID.")
+
+        service = self._get_service()
+
+        def _get_meta():
+            return (
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=message_id,
+                    format="metadata",
+                    metadataHeaders=["Message-ID", "References", "Subject"],
+                )
+                .execute()
+            )
+
+        response = self.limiter.execute_with_retry(
+            "users.messages.get", _get_meta, wait_for_quota=True
+        )
+        headers = extract_header_map(response.get("payload"))
+        thread_id = response.get("threadId", "").strip()
+        rfc_message_id = headers.get("message-id", "").strip()
+        subject = decode_rfc2047_header(headers.get("subject", ""))
+
+        if not thread_id:
+            raise RetrievalBoundError("Selected message did not provide a Gmail thread ID.")
+        if not re.fullmatch(r"<[^<>\s]+>", rfc_message_id):
+            raise RetrievalBoundError("Selected message did not provide a valid RFC Message-ID header.")
+        if not subject:
+            raise RetrievalBoundError("Selected message did not provide a subject for thread matching.")
+
+        references = re.findall(r"<[^<>\s]+>", headers.get("references", ""))
+        if rfc_message_id not in references:
+            references.append(rfc_message_id)
+
+        self.audit.record(
+            AuditEntry(
+                operation="get_reply_metadata",
+                purpose=purpose,
+                status="SUCCESS",
+                message_id=message_id,
+                details="thread_context_retrieved",
+            )
+        )
+        return ReplyMetadata(
+            gmail_message_id=message_id,
+            thread_id=thread_id,
+            rfc_message_id=rfc_message_id,
+            references=tuple(references),
+            subject=subject,
+        )
 
     def list_attachments(
         self,
@@ -730,3 +820,40 @@ class GmailRetriever:
             )
         )
         return labels
+
+    def get_raw_message(
+        self,
+        message_id: str,
+        purpose: str = "get_raw_message",
+    ) -> Any:
+        """Retrieves raw RFC 2822 message from Gmail and returns parsed EmailMessage."""
+        from email import message_from_bytes
+        from email.policy import default
+
+        service = self._get_service()
+
+        def _get_raw():
+            return (
+                service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="raw")
+                .execute()
+            )
+
+        resp = self.limiter.execute_with_retry("users.messages.get", _get_raw)
+        raw_b64 = resp.get("raw", "")
+        pad_len = (4 - len(raw_b64) % 4) % 4
+        raw_bytes = base64.urlsafe_b64decode(raw_b64 + ("=" * pad_len))
+        parsed = message_from_bytes(raw_bytes, policy=default)
+
+        self.audit.record(
+            AuditEntry(
+                operation="get_raw_message",
+                purpose=purpose,
+                status="SUCCESS",
+                message_id=message_id,
+                details=f"bytes={len(raw_bytes)}",
+            )
+        )
+        return parsed
+

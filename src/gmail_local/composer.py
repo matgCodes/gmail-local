@@ -13,6 +13,7 @@ from gmail_local.audit import AuditLogger
 from gmail_local.auth import AuthManager
 from gmail_local.config import DRAFTS_DIR
 from gmail_local.models import (
+    AttachmentMode,
     AuditEntry,
     FrozenAttachment,
     FrozenDraft,
@@ -28,11 +29,15 @@ def create_frozen_draft(
     cc: Optional[List[str]] = None,
     bcc: Optional[List[str]] = None,
     body_html: Optional[str] = None,
+    thread_id: Optional[str] = None,
     in_reply_to: Optional[str] = None,
     references: Optional[List[str]] = None,
     attachment_paths: Optional[List[Union[Path, str]]] = None,
+    attachment_mode: Union[AttachmentMode, str] = AttachmentMode.AUTO,
+    attachment_modes: Optional[Dict[str, Union[AttachmentMode, str]]] = None,
 ) -> FrozenDraft:
     """Constructs, inspects local attachments for, and validates an immutable FrozenDraft."""
+    import re
     attachments: List[FrozenAttachment] = []
 
     if attachment_paths:
@@ -51,9 +56,42 @@ def create_frozen_draft(
             file_bytes = p.read_bytes()
             size = len(file_bytes)
             digest = hashlib.sha256(file_bytes).hexdigest()
-            mime_type, _ = mimetypes.guess_type(str(p))
-            if not mime_type:
+
+            # Resolve effective mode for this attachment
+            effective_mode_raw = attachment_mode
+            if attachment_modes:
+                if p.name in attachment_modes:
+                    effective_mode_raw = attachment_modes[p.name]
+                elif str(p) in attachment_modes:
+                    effective_mode_raw = attachment_modes[str(p)]
+
+            if isinstance(effective_mode_raw, str):
+                try:
+                    effective_mode = AttachmentMode(effective_mode_raw.lower())
+                except ValueError:
+                    raise FrozenDraftValidationError(f"Unknown attachment mode: '{effective_mode_raw}'")
+            else:
+                effective_mode = effective_mode_raw
+
+            if effective_mode == AttachmentMode.COMPATIBILITY:
                 mime_type = "application/octet-stream"
+            elif effective_mode == AttachmentMode.INVITATION:
+                content_str = file_bytes.decode("utf-8", errors="replace")
+                method_match = re.search(r"(?m)^METHOD:([A-Za-z0-9_-]+)", content_str, re.IGNORECASE)
+                if not method_match:
+                    raise FrozenDraftValidationError(
+                        f"Calendar invitation mode for '{p.name}' requires matching VCALENDAR METHOD property (e.g. METHOD:REQUEST)."
+                    )
+                inv_method = method_match.group(1).upper()
+                mime_type = f"text/calendar; charset=UTF-8; method={inv_method}"
+            elif effective_mode == AttachmentMode.SNAPSHOT or (
+                effective_mode == AttachmentMode.AUTO
+                and (p.suffix.lower() == ".ics" or mimetypes.guess_type(str(p))[0] == "text/calendar")
+            ):
+                mime_type = "text/calendar; charset=UTF-8"
+            else:
+                guessed, _ = mimetypes.guess_type(str(p))
+                mime_type = guessed or "application/octet-stream"
 
             attachments.append(
                 FrozenAttachment(
@@ -72,6 +110,7 @@ def create_frozen_draft(
         cc=list(cc) if cc else [],
         bcc=list(bcc) if bcc else [],
         body_html=body_html,
+        thread_id=thread_id,
         in_reply_to=in_reply_to,
         references=list(references) if references else [],
         attachments=attachments,
@@ -95,12 +134,19 @@ def build_mime_message(draft: FrozenDraft) -> EmailMessage:
     # Attachments
     for att in draft.attachments:
         data = Path(att.file_path).read_bytes()
-        maintype, subtype = att.mime_type.split("/", 1)
+        temp_msg = EmailMessage()
+        temp_msg["Content-Type"] = att.mime_type
+        maintype = temp_msg.get_content_maintype()
+        subtype = temp_msg.get_content_subtype()
+        raw_params = temp_msg.get_params()[1:] if temp_msg.get_params() else []
+        params = dict(raw_params) if raw_params else None
+
         msg.add_attachment(
             data,
             maintype=maintype,
             subtype=subtype,
             filename=att.filename,
+            params=params,
         )
 
     # RFC 5322 Headers
@@ -124,11 +170,10 @@ def build_draft_payload(draft: FrozenDraft) -> Dict[str, Any]:
     mime_msg = build_mime_message(draft)
     raw_bytes = mime_msg.as_bytes()
     raw_base64url = base64.urlsafe_b64encode(raw_bytes).decode("utf-8")
-    return {
-        "message": {
-            "raw": raw_base64url,
-        }
-    }
+    message_payload = {"raw": raw_base64url}
+    if draft.thread_id:
+        message_payload["threadId"] = draft.thread_id
+    return {"message": message_payload}
 
 
 class GmailDraftManager:
@@ -246,4 +291,3 @@ def load_draft_locally(identifier: str, drafts_dir: Optional[Path] = None) -> Fr
                 continue
 
     raise FileNotFoundError(f"No local draft found matching '{identifier}'")
-

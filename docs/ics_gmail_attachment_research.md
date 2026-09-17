@@ -1,0 +1,60 @@
+# Gmail UI treatment of a valid `.ics` MIME part
+
+Research date: 2026-09-17. Scope: documentation and protocol research only. This note does not inspect Gmail, message contents, credentials, or source code. It distinguishes **documented fact** from **inference**; no public Google source located for this research defines Gmail's web-UI rules for presenting a `text/calendar` part, including a message sent to the same mailbox.
+
+## Answer
+
+A MIME part can be present in the RFC-formatted message returned by Gmail's API and still not appear as an ordinary downloadable attachment in the Gmail UI. The protocol reason is that a receiving mail user agent is allowed to select handling based on the part's `Content-Type`, whereas `Content-Disposition` supplies a filename/presentation hint rather than a command that a particular UI must expose a download. A `text/calendar` part is a registered calendar media type and calendar-capable clients can give it calendar-specific treatment.
+
+That conclusion is a standards-based **inference about possible client presentation**, not a documented Gmail product behavior. Google documents how to store and retrieve raw MIME through the API, but the reviewed Google documentation makes no promise that every MIME part with `Content-Disposition: attachment` will be rendered as a normal downloadable attachment in Gmail's UI. It also does not document a special self-sent rule. Therefore, “present in raw, absent from the attachment chip/list” establishes a UI/API representation difference; it does not establish byte loss or a Gmail delivery transformation.
+
+## Documented facts
+
+| Fact | Primary-source evidence | What it establishes |
+|---|---|---|
+| Gmail API `messages.get`/`drafts.get` with `format=RAW` returns the entire RFC 2822 message as base64url. | [Gmail Message resource](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages) | The raw message is the appropriate API representation to determine whether the MIME part exists in Gmail's stored message. |
+| Gmail's documented send workflow accepts an RFC 2822-compliant MIME message, base64url encoded in `raw`; its attachment example uses `EmailMessage.add_attachment`. | [Create and send email messages](https://developers.google.com/workspace/gmail/api/guides/sending) | Gmail API supports MIME attachments; the guide does not state UI-presentation rules by media type. |
+| `text/calendar` is the registered iCalendar media type. `.ics` is its registered file extension; no `text/calendar` parameters are required by the registration. `charset`, `method`, and `component` are optional parameters. | [RFC 5545 §8.1](https://www.rfc-editor.org/rfc/rfc5545.html#section-8.1) | A plain `text/calendar` attachment without `method` is a valid iCalendar media type. |
+| For an iCalendar stream carried by MIME, RFC 5545 says the `charset` Content-Type parameter **MUST** specify the charset. | [RFC 5545 §3.1.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.1.4) | `charset=UTF-8` is a standards-compliance hardening change. It is not evidence that its absence causes Gmail's UI to hide an attachment. |
+| The `method` parameter has to be present and agree with the calendar's `METHOD` property only if all objects have that property. | [RFC 5545 §8.1](https://www.rfc-editor.org/rfc/rfc5545.html#section-8.1) | Adding `method=REQUEST` to a calendar that has no matching `METHOD:REQUEST` would be noncompliant. A snapshot need not become an invitation. |
+| RFC 6047 defines the *iMIP scheduling* profile. In that profile, a calendar body part must be `text/calendar` with a matching `method` parameter and `METHOD` property; a `text/calendar` part without `method` is explicitly not an iMIP part and is outside RFC 6047's requirements. | [RFC 6047 §2.4](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.4) | A no-`method` calendar attachment is not malformed merely because it is not an invitation; it is outside the scheduling profile. |
+| RFC 6047 permits an iMIP calendar part inside `multipart/mixed` and says a compliant scheduling-capable receiving UA must process `text/calendar` parts enclosed in `multipart/*`. It also suggests a human-readable alternative for UAs that do not support calendar content. | [RFC 6047 §2.4](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.4) | `multipart/mixed` with a text body and calendar part is a valid structure. It does not require Gmail to use a download-style presentation. |
+| RFC 6047 says a client may include `Content-Disposition` to provide an iCalendar filename, but handling **must** be based on `Content-Type`, not on the file extension in `Content-Disposition`. | [RFC 6047 §2.6](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.6) | `Content-Disposition: attachment; filename=…ics` is useful metadata but is not a protocol guarantee of a download control. This is the strongest standards explanation for why a calendar-aware UI could treat the part specially. |
+| For iMIP with non-ASCII data, RFC 6047 requires `charset=UTF-8`; base64 is permitted where needed. | [RFC 6047 §§2.4–2.5](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.4) | UTF-8 charset and normal transfer encoding are interoperability requirements for an actual non-ASCII iMIP payload; they do not prescribe Gmail UI behavior. |
+| `ORGANIZER` is not universally required: its RFC 5545 conformance rule is `0 or 1`, and it is prohibited for some component cases. | [RFC 5545 §3.8.4.3](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.4.3) | Its absence alone does not invalidate an ordinary calendar file. An actual scheduling `REQUEST` has further iTIP/iMIP semantics and should not be fabricated merely to force a UI. |
+| Google Calendar's documented Gmail invitation actions apply to Calendar-generated invitations; the Help documentation does not extend those actions to hand-authored raw calendar MIME. | [Respond to event invitations](https://support.google.com/calendar/answer/37135?hl=en-GB) | Google does document Gmail invitation interaction in one product flow, but it is not a contract for this message type. |
+
+## What is known and what is not
+
+| Statement | Status |
+|---|---|
+| A calendar MIME part exists in the exact raw message being compared. | Must be established by parsing that exact raw MIME; it is a message-specific fact, not something documentation can establish. |
+| Gmail's API can retain and return raw RFC-formatted MIME. | Documented. |
+| Gmail's web UI intentionally suppresses ordinary `.ics` attachments, or applies a special rule to self-sent messages. | **Not documented in the reviewed primary Google sources.** Do not state this as fact. |
+| A client could present a `text/calendar` part differently from a generic file because the standards tell it to handle the media type rather than trust the filename/disposition. | Standards-supported inference; Gmail-specific implementation is unconfirmed. |
+| The same mailbox's Sent and Inbox views refer to one delivery/rendering path, or Gmail deduplicates a self-send in a particular way. | Unverified. The reviewed sources contain no self-send UI contract. |
+
+## Testable MIME variants
+
+These are controlled compatibility experiments, not a claim that any variant will make Gmail show a download. Keep the payload harmless, compare the returned raw MIME for every variant, and use the same recipient/view for all comparisons.
+
+| Variant | Change | Source support | Expected interpretation |
+|---|---|---|---|
+| Baseline calendar attachment | `multipart/mixed`; human-readable `text/plain` body; second part `Content-Type: text/calendar; charset=UTF-8`; `Content-Disposition: attachment; filename="event.ics"`; preserve base64 transfer encoding if emitted. Do not add `method`. | Charset: [RFC 5545 §3.1.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.1.4). Filename / type handling: [RFC 6047 §2.6](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.6). Mixed structure: [RFC 6047 §2.4](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.4). | Isolates charset compliance while retaining the intended “downloadable calendar snapshot” semantics. If the UI changes, it is a compatibility observation, not proof that the old MIME was absent. |
+| Calendar invitation, only if a real invitation is intended | Add `METHOD:REQUEST` to the VCALENDAR and `method=REQUEST` (case-insensitive match) to `Content-Type`; populate scheduling fields such as a valid organizer/attendees as required by the intended iTIP transaction. Optionally use `multipart/alternative` with a plain-text alternative. | [RFC 6047 §2.4](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.4) and its example; [RFC 5545 §8.1](https://www.rfc-editor.org/rfc/rfc5545.html#section-8.1). | Tests calendar-invitation treatment, a different product behavior from an attached `.ics` file. Do not use as a cosmetic workaround for a snapshot. |
+| Generic-file control | Keep the same bytes and `Content-Disposition` filename, but use a generic binary media type such as `application/octet-stream` for one test. | This deliberately stops representing the part as registered iCalendar media; RFC 6047 says handling follows `Content-Type`, not filename. [RFC 6047 §2.6](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.6) | If Gmail exposes this control as a normal attachment while `text/calendar` remains raw-visible but UI-hidden, that supports (but does not prove) a media-type-specific presentation explanation. It is not a standards-preserving final format for an iCalendar attachment. |
+| Explicit body/part topology control | Compare (a) text plus calendar in `multipart/mixed` with (b) an iMIP invitation in `multipart/alternative` containing a human-readable text alternative and calendar part. | [RFC 6047 §2.4](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.4) permits these respective structures for scheduling messages. | Separates MIME topology effects from calendar semantics. It does not test a normal attachment against an identical semantic object, so interpret alongside the baseline. |
+| Filename-metadata control | Retain `text/calendar; charset=UTF-8` and vary only the `Content-Disposition` filename or omit the header. | [RFC 6047 §2.6](https://www.rfc-editor.org/rfc/rfc6047.html#section-2.6) permits a filename but says content handling is based on type. | A UI difference would show a product-specific metadata preference; no outcome overrides the type-based requirement in the RFC. |
+
+## Evidence discipline for the incident
+
+1. Treat the raw MIME and the Gmail UI as two different representations. Record only MIME tree, media type/parameters, disposition, filename, decoded byte count/hash, and the specific UI observation—never the calendar content in logs.
+2. For each controlled variant, confirm the stored sent and received raw messages separately before comparing UI treatment. Gmail's API documentation defines raw retrieval but does not make a recipient copy interchangeable with a sender's copy.
+3. Do not conclude that Gmail removed bytes based only on the absence of an attachment tile/chip. Byte loss requires differing raw MIME (or a failed decoded-byte comparison).
+4. Do not retrofit `METHOD`, `ORGANIZER`, or attendees unless the product meaning is genuinely a scheduling transaction. Those fields change semantics and may invoke different client behavior.
+
+## Prior implementation finding retained for follow-up
+
+An earlier, code-focused version of this note identified a separate staged-draft verification gap: a locally verified attachment did not itself prove the remote draft's contents before sending. That remains a useful investigation item, but it is logically separate from the present raw-visible/UI-hidden question. The Gmail API documents both draft replacement and raw retrieval; use a remote-draft readback or an approved `raw` body at send time when evaluating that gap. [Work with drafts](https://developers.google.com/workspace/gmail/api/guides/drafts)
+
+No code or tests were changed by this research.

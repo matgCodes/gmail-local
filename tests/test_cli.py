@@ -10,6 +10,7 @@ from gmail_local.models import (
     CandidateMessage,
     HistoryDelta,
     LabelInfo,
+    ReplyMetadata,
     SelectedMessage,
     ThreadSummary,
 )
@@ -284,6 +285,7 @@ def test_cli_draft_command_push_to_gmail(mock_dm_cls, capsys):
         cc=draft.cc,
         bcc=draft.bcc,
         body_html=draft.body_html,
+        thread_id=draft.thread_id,
         in_reply_to=draft.in_reply_to,
         references=draft.references,
         attachments=draft.attachments,
@@ -302,6 +304,38 @@ def test_cli_draft_command_push_to_gmail(mock_dm_cls, capsys):
     assert "=== SEND HANDOFF ===" in captured.out
     assert "r-987654321" in captured.out
     assert "Staged to Gmail Drafts" in captured.out
+
+
+@patch("gmail_local.cli.GmailDraftManager")
+@patch("gmail_local.cli.GmailRetriever")
+def test_cli_draft_reply_to_message_binds_full_thread_context(
+    mock_retriever_cls, mock_dm_cls, capsys
+):
+    mock_retriever = mock_retriever_cls.return_value
+    mock_retriever.get_reply_metadata.return_value = ReplyMetadata(
+        gmail_message_id="m1",
+        thread_id="thread-123",
+        rfc_message_id="<parent-123@example.com>",
+        references=("<root-001@example.com>", "<parent-123@example.com>"),
+        subject="Re: Threaded Subject",
+    )
+    mock_dm = mock_dm_cls.return_value
+    mock_dm.save_draft.side_effect = lambda draft, purpose: draft
+
+    exit_code = main([
+        "draft",
+        "--to", "alice@example.com",
+        "--subject", "Re: Threaded Subject",
+        "--body", "Body content.",
+        "--reply-to-message-id", "m1",
+    ])
+
+    assert exit_code == 0
+    saved = mock_dm.save_draft.call_args[0][0]
+    assert saved.thread_id == "thread-123"
+    assert saved.in_reply_to == "<parent-123@example.com>"
+    assert saved.references == ["<root-001@example.com>", "<parent-123@example.com>"]
+    assert "Thread ID:        thread-123" in capsys.readouterr().out
 
 
 @patch("gmail_local.cli.GmailDraftManager")
@@ -366,7 +400,35 @@ def test_cli_send_with_confirm_succeeds(mock_sender_cls, mock_isatty, capsys, tm
     mock_sender.send.assert_called_once()
     captured = capsys.readouterr()
     assert "TRANSMISSION RECEIPT" in captured.out
-    assert "sent_12345" in captured.out
+    assert "Delivery Verification Summary" in captured.out
+    assert "Local Attachment Integrity: VERIFIED" in captured.out
+    assert "Gmail Send API Acceptance:  ACCEPTED" in captured.out
+    assert "Recipient/UI Presentation:  NOT PROGRAMMATICALLY VERIFIED" in captured.out
+
+
+@patch("gmail_local.cli.GmailDraftManager")
+def test_cli_draft_with_attach_mode_compatibility(mock_dm_cls, capsys, tmp_path: Path):
+    ics_file = tmp_path / "event.ics"
+    ics_file.write_bytes(b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+
+    mock_dm = mock_dm_cls.return_value
+    mock_dm.save_draft.side_effect = lambda draft, purpose: draft
+
+    exit_code = main([
+        "draft",
+        "--to", "target@example.com",
+        "--subject", "ICS Compat",
+        "--body", "Body.",
+        "--attach", str(ics_file),
+        "--attach-mode", "compatibility",
+    ])
+    assert exit_code == 0
+    saved_draft = mock_dm.save_draft.call_args[0][0]
+    assert len(saved_draft.attachments) == 1
+    assert saved_draft.attachments[0].mime_type == "application/octet-stream"
+    captured = capsys.readouterr()
+    assert "=== SEND HANDOFF ===" in captured.out
+    assert "event.ics" in captured.out
 
 
 @patch("sys.stdin.isatty", return_value=True)
@@ -585,5 +647,4 @@ def test_cli_cleanup_untrash_command(mock_mod_cls, capsys):
     mock_mod.untrash.assert_called_once_with("msg_restore_99", purpose="cleanup_untrash")
     captured = capsys.readouterr()
     assert "Restored message 'msg_restore_99' from Trash" in captured.out
-
 

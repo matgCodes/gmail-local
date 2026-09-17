@@ -174,6 +174,7 @@ def test_frozen_draft_serialization_roundtrip():
         cc=["carol@example.com"],
         bcc=["dave@example.com"],
         body_html="<p>Here is the status report.</p>",
+        thread_id="thread-123",
         in_reply_to="<msg-123@domain.com>",
         references=["<msg-100@domain.com>", "<msg-123@domain.com>"],
         attachments=[att],
@@ -187,6 +188,7 @@ def test_frozen_draft_serialization_roundtrip():
     assert restored.cc == draft.cc
     assert restored.bcc == draft.bcc
     assert restored.body_html == draft.body_html
+    assert restored.thread_id == draft.thread_id
     assert restored.in_reply_to == draft.in_reply_to
     assert restored.references == draft.references
     assert len(restored.attachments) == 1
@@ -340,6 +342,5 @@ def test_cleanup_plan_serialization_roundtrip_and_handoff():
     assert plan.compute_fingerprint() in handoff
     assert "Target Count:       1 messages" in handoff
     assert "Weekly Digest" in handoff
-
 
 
