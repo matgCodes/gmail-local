@@ -16,6 +16,8 @@ the issue tracker are all named `gmail-local`
   0014 and `docs/calendar_meet_api_official_research.md`.
 - Read `README.md` for setup, per-grant credential separation, security ceilings,
   and the CLI reference; `gmail-local --help` is the authoritative command list.
+- Read `docs/architecture_diagram.md` for how the four grants, the three manual
+  gates, and the retrieval, triage, cleanup, and calendar paths fit together.
 - Read `docs/adr/` for the numbered decisions (0001-0014) cited throughout this file.
 - Read `docs/agent-cookbook.md` before executing retrieval tasks. It documents
   Gmail search syntax, PST date evaluation, MIME multipart handling, and the
