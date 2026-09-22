@@ -1,29 +1,40 @@
 # Gmail API Project Instructions
 
-Broader workspace and global instructions remain in force. This file adds rules
-for work inside this project.
+This directory is named `Gmail-API`, but the repository, the installed CLI, and
+the issue tracker are all named `gmail-local`
+(`git@github.com:matgCodes/gmail-local.git`).
 
 ## Project and sources of truth
 
-- This project is a locally operated Gmail integration (Retrieval, Transmission, and Modification Milestones).
+- This project is a locally operated Gmail integration spanning the Retrieval,
+  Transmission, Modification, Inbox Triage, and Calendar/Meet milestones.
 - Read `WAYFINDER_GMAIL_API_READ_ACCESS.md` for retrieval scope, decisions, and completed gates.
 - Read `WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md` for outbound drafting, Frozen Draft contracts, and transmission gates.
 - Read `WAYFINDER_GMAIL_API_MODIFY_ACCESS.md` for mailbox modification, staged cleanup plans, and modify gates.
 - Read `WAYFINDER_INBOX_TRIAGE_PIPELINE.md` for autonomous AFK triage policies, evaluation benchmarks, and staged plan partitioning.
+- Calendar and Meet have no Wayfinder record. Their controlling sources are ADR
+  0014 and `docs/calendar_meet_api_official_research.md`.
+- Read `README.md` for setup, security ceilings, and the CLI reference. It does
+  not yet document the calendar commands; `gmail-local --help` is the complete list.
+- Read `docs/adr/` for the numbered decisions (0001-0014) cited throughout this file.
 - Read `docs/agent-cookbook.md` before executing retrieval tasks. It documents
   Gmail search syntax, PST date evaluation, MIME multipart handling, and the
   3-stage retrieval workflow.
 - Refer to `docs/error-recovery-guide.md` for error code diagnostics and recovery.
-- Run `python evals/run_evals.py` to verify agent security and boundary evals.
+- Verify with `.venv/bin/pytest` for the full offline suite, and
+  `.venv/bin/python evals/run_evals.py` for the security and boundary eval subset.
+  The eval runner is a subset, not a substitute for the full suite.
 - Use `docs/gmail_api_official_research.md` as supporting official-source
   research. If the documents conflict or appear incomplete, surface the
   mismatch rather than guessing or silently choosing one.
 
 ## Active gates
 
-- Before scaffolding or implementation, verify in the controlling record that the Operator
-  has expressly chosen Python or Node and separately authorized implementation.
-  A runtime choice alone is not implementation authorization.
+- The runtime question is settled: Python, per ADR 0005. New implementation work
+  still requires the Operator's express authorization in the controlling record for
+  that milestone. Per `WAYFINDER_GMAIL_API_READ_ACCESS.md`, a resolved runtime or
+  design decision "does not authorize scaffolding, implementation, OAuth, Gmail
+  access, or transmission."
 - Do not perform Google Cloud setup, live OAuth, credential or token creation or
   access, Gmail reads, or attachment downloads unless the Operator separately authorizes
   the applicable phase.

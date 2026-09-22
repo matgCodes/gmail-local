@@ -1,8 +1,9 @@
 # Wayfinder Ticket: Establish Guarded Gmail API Write and Transmission Access
 
-**Status:** Active (Transmission Milestone Specification & Scaffolding)  
+**Status:** Completed (Transmission Milestone Verified)  
 **Type:** `wayfinder:task`  
 **Created:** 2026-09-10  
+**Verified:** 2026-09-10 (end-to-end attachment delivery re-verified 2026-09-17, issue #2)  
 **Workspace:** `/Users/mag_station/Dev_Tools/Gmail-API`  
 **Account:** `[REDACTED_USER_EMAIL]`  
 **Governing ADRs:** [ADR 0001](docs/adr/0001-user-executed-send-gate.md), [ADR 0002](docs/adr/0002-authorize-retrieval-before-transmission.md), [ADR 0003](docs/adr/0003-separate-retrieval-and-transmission-credentials.md), [ADR 0004](docs/adr/0004-one-oauth-project-two-desktop-clients.md), [ADR 0007](docs/adr/0007-separate-service-throttling-from-content-disclosure.md), [ADR 0008](docs/adr/0008-attachment-staging-and-audit-log-retention.md), and [CONTEXT.md](CONTEXT.md).  
