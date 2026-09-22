@@ -1,15 +1,15 @@
 # Gmail Local Integration
 
-A locally operated Gmail capability that lets one human operator retrieve selected mail and prepare outbound mail while retaining sole authority to transmit it.
+A locally operated Gmail and Calendar capability that lets one human operator retrieve selected mail, prepare outbound mail, triage and clean a large mailbox, and schedule events, while retaining sole authority over every write.
 
 ## Actors
 
 **Operator**:
-The human who chooses the Gmail objective, selects messages and files, and alone authorizes transmission by independently running the sender.
+The human who chooses the objective, selects messages and files, and alone authorizes every write by independently executing the gated command.
 _Avoid_: User, approver
 
 **Drafting Agent**:
-An AI agent that may refine operator-originated content and prepare a Frozen Draft but cannot authorize or perform transmission.
+An AI agent that may refine Operator-originated content and stage work behind a gate, but cannot authorize or perform any write.
 _Avoid_: Sender, approver
 
 ## Retrieval
@@ -118,6 +118,10 @@ _Avoid_: Modify token, combined credential
 An immutable mailbox mutation package whose query, target message IDs, and specific actions (trash, archive, label) are bound to one deterministic fingerprint.
 _Avoid_: Bulk deletion script, cleanup queue
 
+**Cleanup Target**:
+One message named in a Cleanup Plan together with the action to be taken on it. A message in a Protected Category never becomes one.
+_Avoid_: Victim, doomed message, deletion candidate
+
 **Cleanup Handoff**:
 The complete presentation of a Cleanup Plan, its fingerprint, affected message count and sample subjects, and the exact CLI command the Operator may run.
 _Avoid_: Auto-clean trigger, deletion prompt
@@ -130,3 +134,58 @@ _Avoid_: Confirmation bypass, auto-scrub
 Moving a targeted message to Gmail's Trash (`users.messages.trash`) where it is retained for 30 days and remains fully recoverable, as opposed to unrecoverable permanent deletion.
 _Avoid_: Hard delete, purge, wipe
 
+## Triage
+
+**Triage Decision**:
+The classification outcome for one Candidate Message: the category it falls in and the action that follows from it.
+_Avoid_: Verdict, ruling, label
+
+**Triage Category**:
+The classification a Candidate Message is assigned from evidence in its headers alone.
+_Avoid_: Label, folder, Gmail category
+
+**Protected Category**:
+A Triage Category whose messages can never become a Cleanup Target, covering financial, transaction, security, travel, personal, and legal or government correspondence.
+_Avoid_: Important, starred, priority
+
+**Sender Cluster**:
+A group of Candidate Messages sharing one sending domain, treated as a unit when judging volume and intent.
+_Avoid_: Sender group, conversation, thread
+
+**Operator Override**:
+An Operator-stated whitelist or blacklist entry for a sender that takes precedence over the inferred Triage Category.
+_Avoid_: Rule, filter, exception
+
+**Triage Manifest**:
+The durable record of one triage run and the decisions it produced.
+_Avoid_: Report, log, summary
+
+## Calendar & Meet
+
+**Calendar Milestone**:
+The separately authorized delivery stage that adds event creation and Meet provisioning after the Modification Milestone.
+_Avoid_: Phase four, scheduling feature
+
+**Calendar Grant**:
+The Operator's separate Google authorization limited to events on calendars the Operator owns, never merged with any Gmail credential.
+_Avoid_: Calendar token, Google token, combined credential
+
+**Calendar Event**:
+A proposed or created entry on the Operator's own calendar, bound to one start, end, and timezone.
+_Avoid_: Meeting, appointment, invite
+
+**Attendee**:
+A person named on a Calendar Event. Distinct from a transmission Recipient, who receives a Frozen Draft.
+_Avoid_: Recipient, guest, participant
+
+**Calendar Preview**:
+The complete presentation of a proposed Calendar Event before the Manual Action Gate, which creates nothing.
+_Avoid_: Draft event, tentative event, hold
+
+**Manual Action Gate**:
+The boundary at which event creation becomes authorized only when the Operator independently confirms a specific Calendar Preview.
+_Avoid_: Confirmation, auto-create, auto-schedule
+
+**Meet Conference**:
+The Google Meet space bound to a Calendar Event. Its provisioning resolves after the event exists, so an event may be created without one.
+_Avoid_: Meet link, hangout, video call

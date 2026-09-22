@@ -14,8 +14,8 @@ the issue tracker are all named `gmail-local`
 - Read `WAYFINDER_INBOX_TRIAGE_PIPELINE.md` for autonomous AFK triage policies, evaluation benchmarks, and staged plan partitioning.
 - Calendar and Meet have no Wayfinder record. Their controlling sources are ADR
   0014 and `docs/calendar_meet_api_official_research.md`.
-- Read `README.md` for setup, security ceilings, and the CLI reference. It does
-  not yet document the calendar commands; `gmail-local --help` is the complete list.
+- Read `README.md` for setup, per-grant credential separation, security ceilings,
+  and the CLI reference; `gmail-local --help` is the authoritative command list.
 - Read `docs/adr/` for the numbered decisions (0001-0014) cited throughout this file.
 - Read `docs/agent-cookbook.md` before executing retrieval tasks. It documents
   Gmail search syntax, PST date evaluation, MIME multipart handling, and the
