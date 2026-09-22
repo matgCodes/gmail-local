@@ -1312,7 +1312,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build command-line parser."""
     parser = argparse.ArgumentParser(
         prog="gmail-local",
-        description="Locally operated, read-only Gmail integration with least-privilege security bounds.",
+        description="Locally operated Gmail and Calendar integration with least-privilege security bounds and manual gates on every write.",
     )
     subparsers = parser.add_subparsers(dest="subcommand", help="Available commands")
 

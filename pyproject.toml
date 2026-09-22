@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gmail-local"
 version = "0.1.0"
-description = "Locally operated, read-only Gmail integration with least-privilege security bounds"
+description = "Locally operated Gmail and Calendar integration with least-privilege security bounds and manual gates on every write"
 readme = "WAYFINDER_GMAIL_API_READ_ACCESS.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
