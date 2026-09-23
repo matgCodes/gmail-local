@@ -293,6 +293,19 @@ These are application controls, not additional Google limits:
 - Revoke access and confirm the local token is removed.
 - Reauthorize and confirm the invalid/revoked-token path is understandable.
 
+### 7. Display the Cc header in retrieval output — authorized
+
+- Operator authorization recorded 2026-09-23 for the change tracked in
+  GitHub issue #6: carry `Cc` through `SelectedMessage` and thread
+  participants, request it in the metadata header set on the search, preview,
+  and thread paths, and render a `Cc:` line in `read` output when present.
+- Scope is display of an already-fetched header under the existing
+  `gmail.readonly` grant. It adds no scope, changes no bound in the Read
+  Bound or Hard Boundary tables, and does not touch authorization, token
+  storage, transmission, or modification paths.
+- Verification: the offline suite and the eval subset must pass with updated
+  fixtures before merge.
+
 ## Retrieval Milestone acceptance criteria
 
 - [x] The implementation has a verified home at

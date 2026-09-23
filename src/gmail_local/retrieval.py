@@ -112,7 +112,7 @@ class GmailRetriever:
                         userId="me",
                         id=msg_id,
                         format="metadata",
-                        metadataHeaders=["Date", "From", "To", "Subject"],
+                        metadataHeaders=["Date", "From", "To", "Cc", "Subject"],
                     )
                     .execute()
                 )
@@ -184,7 +184,7 @@ class GmailRetriever:
                             userId="me",
                             id=msg_id,
                             format="metadata",
-                            metadataHeaders=["Date", "From", "To", "Subject"],
+                            metadataHeaders=["Date", "From", "To", "Cc", "Subject"],
                         )
                         .execute()
                     )
@@ -243,7 +243,7 @@ class GmailRetriever:
                         userId="me",
                         id=cid,
                         format="metadata",
-                        metadataHeaders=["Date", "From", "To", "Subject"],
+                        metadataHeaders=["Date", "From", "To", "Cc", "Subject"],
                     )
                     .execute()
                 )
@@ -445,6 +445,7 @@ class GmailRetriever:
                 body_text=body_text,
                 body_bytes=body_bytes,
                 attachments=attachments,
+                cc=decode_rfc2047_header(headers.get("cc", "")),
             )
             selected.append(msg)
             self.audit.record(
@@ -747,7 +748,7 @@ class GmailRetriever:
                     userId="me",
                     id=thread_id,
                     format="metadata",
-                    metadataHeaders=["From", "Subject"],
+                    metadataHeaders=["From", "Cc", "Subject"],
                 )
                 .execute()
             )
@@ -764,6 +765,12 @@ class GmailRetriever:
             headers = extract_header_map(m.get("payload"))
             if headers.get("from"):
                 participants.add(decode_rfc2047_header(headers["from"]))
+            if headers.get("cc"):
+                decoded_cc = decode_rfc2047_header(headers["cc"])
+                for addr in decoded_cc.split(","):
+                    addr = addr.strip()
+                    if addr:
+                        participants.add(addr)
             if headers.get("subject") and subject == "(No Subject)":
                 subject = decode_rfc2047_header(headers["subject"])
 

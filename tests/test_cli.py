@@ -176,6 +176,31 @@ def test_cli_read_command(mock_retriever_cls, capsys):
     captured = capsys.readouterr()
     assert "Retrieved 1 Full Message(s)" in captured.out
     assert "Your balance is $5,000." in captured.out
+    assert "Cc:" not in captured.out
+
+
+@patch("gmail_local.cli.GmailRetriever")
+def test_cli_read_command_displays_cc_when_present(mock_retriever_cls, capsys):
+    mock_retriever = mock_retriever_cls.return_value
+    mock_retriever.get_messages.return_value = [
+        SelectedMessage(
+            id="msg_1",
+            thread_id="th_1",
+            date="2026-09-10",
+            sender="info@bank.com",
+            recipient="me@example.com",
+            subject="Monthly Statement",
+            body_text="Your balance is $5,000.",
+            body_bytes=23,
+            attachments=[],
+            cc="carol@example.com, dave@example.com",
+        )
+    ]
+
+    exit_code = main(["read", "msg_1"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Cc:         carol@example.com, dave@example.com" in captured.out
 
 
 @patch("gmail_local.cli.GmailRetriever")
