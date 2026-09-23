@@ -3,6 +3,7 @@
 import base64
 import os
 import re
+from email.utils import formataddr, getaddresses
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -756,21 +757,30 @@ class GmailRetriever:
         resp = self.limiter.execute_with_retry("users.threads.get", _thread_call)
         messages = resp.get("messages", [])
 
-        participants = set()
+        # Keyed by lowercased email address so one person appearing bare in
+        # one header and with a display name in another is listed once.
+        # The display-name form wins when either message supplies it.
+        participants: Dict[str, str] = {}
         subject = "(No Subject)"
         mids: List[str] = []
+
+        def _add_participants(header_value: str) -> None:
+            for name, addr in getaddresses([decode_rfc2047_header(header_value)]):
+                addr = addr.strip()
+                if not addr:
+                    continue
+                key = addr.lower()
+                display = formataddr((name, addr)) if name else addr
+                if key not in participants or (name and "<" not in participants[key]):
+                    participants[key] = display
 
         for m in messages:
             mids.append(m["id"])
             headers = extract_header_map(m.get("payload"))
             if headers.get("from"):
-                participants.add(decode_rfc2047_header(headers["from"]))
+                _add_participants(headers["from"])
             if headers.get("cc"):
-                decoded_cc = decode_rfc2047_header(headers["cc"])
-                for addr in decoded_cc.split(","):
-                    addr = addr.strip()
-                    if addr:
-                        participants.add(addr)
+                _add_participants(headers["cc"])
             if headers.get("subject") and subject == "(No Subject)":
                 subject = decode_rfc2047_header(headers["subject"])
 
@@ -778,7 +788,7 @@ class GmailRetriever:
             thread_id=thread_id,
             message_count=len(messages),
             subject=subject,
-            participants=sorted(participants),
+            participants=sorted(participants.values()),
             message_ids=mids,
         )
 
