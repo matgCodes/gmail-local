@@ -162,6 +162,147 @@ def test_read_bound_discards_overflow_body_at_1_mib(mock_audit, mock_rate_limite
     assert "mid=m2" in audit_content
 
 
+def test_get_messages_populates_cc_when_present(mock_audit, mock_rate_limiter):
+    mock_service = MagicMock()
+    mock_service.users().messages().get().execute.return_value = {
+        "id": "m1",
+        "threadId": "thread-1",
+        "payload": {
+            "headers": [
+                {"name": "Date", "value": "Mon, 1 Sep 2026 00:00:00 -0700"},
+                {"name": "From", "value": "alice@example.com"},
+                {"name": "To", "value": "bob@example.com"},
+                {"name": "Cc", "value": "carol@example.com, dave@example.com"},
+                {"name": "Subject", "value": "Cc Test"},
+            ],
+            "mimeType": "text/plain",
+            "body": {"data": base64.urlsafe_b64encode(b"Body text").decode("utf-8")},
+        },
+    }
+
+    retriever = GmailRetriever(
+        audit_logger=mock_audit,
+        rate_limiter=mock_rate_limiter,
+        service=mock_service,
+    )
+
+    results = retriever.get_messages(["m1"])
+    assert len(results) == 1
+    assert results[0].cc == "carol@example.com, dave@example.com"
+
+
+def test_get_messages_cc_absent_defaults_empty(mock_audit, mock_rate_limiter):
+    mock_service = MagicMock()
+    mock_service.users().messages().get().execute.return_value = {
+        "id": "m1",
+        "threadId": "thread-1",
+        "payload": {
+            "headers": [
+                {"name": "Date", "value": "Mon, 1 Sep 2026 00:00:00 -0700"},
+                {"name": "From", "value": "alice@example.com"},
+                {"name": "To", "value": "bob@example.com"},
+                {"name": "Subject", "value": "No Cc Test"},
+            ],
+            "mimeType": "text/plain",
+            "body": {"data": base64.urlsafe_b64encode(b"Body text").decode("utf-8")},
+        },
+    }
+
+    retriever = GmailRetriever(
+        audit_logger=mock_audit,
+        rate_limiter=mock_rate_limiter,
+        service=mock_service,
+    )
+
+    results = retriever.get_messages(["m1"])
+    assert len(results) == 1
+    assert results[0].cc == ""
+
+
+def test_get_thread_summary_includes_cc_participants(mock_audit, mock_rate_limiter):
+    mock_service = MagicMock()
+    mock_service.users().threads().get().execute.return_value = {
+        "id": "thread_abc",
+        "messages": [
+            {
+                "id": "m1",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "alice@example.com"},
+                        {"name": "Cc", "value": "carol@example.com, dave@example.com"},
+                        {"name": "Subject", "value": "Project Update"},
+                    ]
+                },
+            },
+            {
+                "id": "m2",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "bob@example.com"},
+                        {"name": "Subject", "value": "Re: Project Update"},
+                    ]
+                },
+            },
+        ],
+    }
+
+    retriever = GmailRetriever(
+        audit_logger=mock_audit,
+        rate_limiter=mock_rate_limiter,
+        service=mock_service,
+    )
+
+    summary = retriever.get_thread("thread_abc")
+    assert "alice@example.com" in summary.participants
+    assert "bob@example.com" in summary.participants
+    assert "carol@example.com" in summary.participants
+    assert "dave@example.com" in summary.participants
+
+
+def test_get_thread_summary_deduplicates_participants_by_address(mock_audit, mock_rate_limiter):
+    """One person copied bare in one message and with a display name in another
+    is listed once, keeping the display-name form; address case is ignored."""
+    mock_service = MagicMock()
+    mock_service.users().threads().get().execute.return_value = {
+        "id": "thread_dup",
+        "messages": [
+            {
+                "id": "m1",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Alice Example <alice@example.com>"},
+                        {"name": "Cc", "value": "carol@example.com"},
+                        {"name": "Subject", "value": "Nomination"},
+                    ]
+                },
+            },
+            {
+                "id": "m2",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "bob@example.com"},
+                        {"name": "Cc", "value": "Carol Example <Carol@Example.com>, alice@example.com"},
+                        {"name": "Subject", "value": "Re: Nomination"},
+                    ]
+                },
+            },
+        ],
+    }
+
+    retriever = GmailRetriever(
+        audit_logger=mock_audit,
+        rate_limiter=mock_rate_limiter,
+        service=mock_service,
+    )
+
+    summary = retriever.get_thread("thread_dup")
+    assert summary.participants == [
+        "Alice Example <alice@example.com>",
+        "Carol Example <Carol@Example.com>",
+        "bob@example.com",
+    ]
+
+
 def test_download_rejects_overwrite(mock_audit, mock_rate_limiter, tmp_path: Path):
     target = tmp_path / "existing.pdf"
     target.write_text("already here")

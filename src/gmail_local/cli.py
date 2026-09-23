@@ -1179,6 +1179,8 @@ def cmd_read(retriever: GmailRetriever, args: argparse.Namespace) -> int:
             print(f"Date:       {m.date}")
             print(f"From:       {m.sender}")
             print(f"To:         {m.recipient}")
+            if m.cc:
+                print(f"Cc:         {m.cc}")
             print(f"Subject:    {m.subject}")
             print(f"Body Size:  {m.body_bytes} bytes")
             if m.attachments:

@@ -45,6 +45,7 @@ class SelectedMessage:
     body_text: str
     body_bytes: int
     attachments: List[AttachmentDescriptor] = field(default_factory=list)
+    cc: str = ""
 
 
 @dataclass(frozen=True)
