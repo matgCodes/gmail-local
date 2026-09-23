@@ -66,6 +66,13 @@ Present the returned headers (ID, Date, From, Subject) in a clear markdown table
 * Run `gmail-local read <id>` for full body text.
 * Run `gmail-local attachments <id>` to inspect attachments before downloading.
 
+### Header Visibility Limit: Cc Is Retrieved but Not Displayed
+`search`, `preview`, `read`, and `thread` display only `Date`, `From`, `To`, and `Subject`. `read` fetches the message with `format="full"`, so the API response contains `Cc` when present, but `retrieval.py` maps only those four fields into `SelectedMessage` and the value is dropped before display. `thread` lists participants from `From` headers only.
+
+* **Consequence:** "no Cc" in CLI output means "not displayed," never "not present." The header is available under the existing `gmail.readonly` grant; the CLI simply has no output path for it.
+* **Rule:** never state that a message had no Cc, and never state that the Cc cannot be retrieved. Say the CLI does not display it. When the copied addresses matter (for example, a reply that must keep the original Cc), either ask the operator to read them from Gmail, or request a Cc display feature through the tracker. Do not bypass the CLI with ad hoc API calls as routine practice; such calls skip the audit log.
+* Verified 2026-09-23: a message the CLI rendered with `To` only carried a `Cc`, confirmed by a one-off `messages.get(format="metadata", metadataHeaders=["Cc"])` diagnostic through the library's retrieval client.
+
 ---
 
 ## 4. Attachment Handling: MIME Types & Extensions
@@ -166,7 +173,16 @@ Before deploying or after making modifications, always run the evaluation suite 
 
 ---
 
-## 9. Outbound Attachment Presentation Modes & Verifiable Delivery Claims
+## 9. Staging Threaded Replies (`gmail-local draft --reply-to-message-id`)
+
+Use `--reply-to-message-id <msg_id>` to reply inside an existing thread. The tool resolves `In-Reply-To`, `References`, and the Gmail thread ID from the selected message. Two rules, both verified 2026-09-23:
+
+1. **Subject must match the original exactly, with no `Re:` prefix.** Passing `--subject "Re: <original>"` fails with `Guaranteed threaded replies require the subject to exactly match the selected message subject`. Copy the subject verbatim from the `read` output. Gmail still shows the draft as a reply in the thread.
+2. **Cc is not inherited.** The staged reply carries only the addresses you pass with `--to` and `--cc`. Because the CLI does not display the original message's Cc (see Section 3), confirm the copied addresses with the operator before staging a reply that should keep them. Reply-all behavior is the agent's responsibility, not the tool's.
+
+Each `draft` invocation creates a new Gmail draft. Re-staging to fix a mistake leaves the earlier draft in place; tell the operator which draft to discard. `gmail-local drafts list` shows them and `gmail-local drafts get <id>` inspects one; the CLI does not delete drafts.
+
+## 10. Outbound Attachment Presentation Modes & Verifiable Delivery Claims
 
 When drafting outbound emails with attachments (especially `.ics` calendar files):
 
