@@ -14,6 +14,9 @@ the issue tracker are all named `gmail-local`
 - Read `WAYFINDER_INBOX_TRIAGE_PIPELINE.md` for autonomous AFK triage policies, evaluation benchmarks, and staged plan partitioning.
 - Calendar and Meet have no Wayfinder record. Their controlling sources are ADR
   0014 and `docs/calendar_meet_api_official_research.md`.
+- The Availability Grant and the book-a-meeting skill have no Wayfinder record.
+  Their controlling record is `docs/book-meeting-skill-design.md` (ADR 0016
+  pending), tracked in issue #9. Its section 13 records which gates are authorized.
 - Read `README.md` for setup, per-grant credential separation, security ceilings,
   and the CLI reference; `gmail-local --help` is the authoritative command list.
 - Read `docs/architecture_diagram.md` for how the four grants, the three manual
