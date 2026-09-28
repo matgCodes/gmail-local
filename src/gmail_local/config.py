@@ -15,6 +15,9 @@ MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 # Scopes: Calendar event creation & Google Meet integration (Issue #1)
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned"
 
+# Scopes: Read-only free/busy availability (ADR 0016)
+AVAILABILITY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy"
+
 # Standard Local Paths
 CONFIG_DIR = Path.home() / ".config" / "gmail-local"
 CLIENT_SECRET_FILE = CONFIG_DIR / "client_secret.json"
@@ -22,6 +25,7 @@ CLIENT_SECRET_TRANSMISSION_FILE = CONFIG_DIR / "client_secret_transmission.json"
 CLIENT_SECRET_MODIFY_FILE = CONFIG_DIR / "client_secret_modify.json"
 CLIENT_SECRET_CALENDAR_FILE = CONFIG_DIR / "client_secret_calendar.json"
 CLIENT_SECRET_MEET_FILE = CONFIG_DIR / "client_secret_meet.json"
+CLIENT_SECRET_AVAILABILITY_FILE = CONFIG_DIR / "client_secret_availability.json"
 
 
 def _resolve_default_account() -> str:
@@ -44,6 +48,7 @@ KEYCHAIN_SERVICE = "gmail-local-retrieval"
 KEYCHAIN_SERVICE_TRANSMISSION = "gmail-local-transmission"
 KEYCHAIN_SERVICE_MODIFY = "gmail-local-modify"
 KEYCHAIN_SERVICE_CALENDAR = "gmail-local-calendar"
+KEYCHAIN_SERVICE_AVAILABILITY = "gmail-local-availability"
 DEFAULT_ACCOUNT = _resolve_default_account()
 
 STATE_DIR = Path.home() / ".local" / "state" / "gmail-local"

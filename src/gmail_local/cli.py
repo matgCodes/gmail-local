@@ -252,6 +252,57 @@ def cmd_calendar_revoke(retriever: GmailRetriever, args: argparse.Namespace) -> 
         return 1
 
 
+def cmd_availability_status(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Report availability authorization status without exposing token secrets."""
+    secret_path = getattr(args, "client_secret", None)
+    auth = (
+        AuthManager.for_availability(client_secret_path=secret_path)
+        if secret_path
+        else AuthManager.for_availability()
+    )
+    status = auth.get_status()
+    print("=== Gmail Local Availability Status ===")
+    print(f"Account:          {status['account']}")
+    print(f"Keychain Service: {status['keychain_service']}")
+    print(f"Client Secret:    {'Found' if status['has_client_secret'] else 'Missing (~/.config/gmail-local/client_secret_availability.json)'}")
+    print(f"Keychain Token:   {'Present' if status['has_keychain_token'] else 'Not stored (run availability-login)'}")
+    print(f"Token Valid:      {'Yes (active & refreshable)' if status['is_valid'] else 'No'}")
+    print(f"Scope:            {status['scope']}")
+    return 0 if status["is_valid"] else 1
+
+
+def cmd_availability_login(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Execute interactive OAuth login for availability (calendar.freebusy) with PKCE."""
+    print("Initiating Availability OAuth login flow with Google...")
+    print("A browser window will open requesting consent for 'calendar.freebusy'.")
+    secret_path = getattr(args, "client_secret", None)
+    auth = (
+        AuthManager.for_availability(client_secret_path=secret_path)
+        if secret_path
+        else AuthManager.for_availability()
+    )
+    try:
+        account = auth.run_interactive_login(open_browser=not args.no_browser)
+        print(f"Successfully authorized availability and stored refresh token in Keychain for {account}!")
+        return 0
+    except AuthError as e:
+        print(f"Availability authorization error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_availability_revoke(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Revoke availability authorization and clear availability Keychain entry."""
+    print("Revoking Availability OAuth token and clearing Keychain entry...")
+    auth = AuthManager.for_availability()
+    try:
+        auth.revoke()
+        print("Successfully revoked availability credentials and removed from Keychain.")
+        return 0
+    except Exception as e:
+        print(f"Availability revocation error: {e}", file=sys.stderr)
+        return 1
+
+
 def cmd_calendar_event_preview(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     """Preview a Calendar event and generate standard handoff markdown."""
     manager = CalendarManager()
@@ -1398,6 +1449,21 @@ def build_parser() -> argparse.ArgumentParser:
         p_sub.add_argument("--purpose", default=f"calendar_event_{sub_name}", help="Operator-stated purpose for audit log")
         p_sub.set_defaults(func=sub_func)
     p_cal_event.set_defaults(func=cmd_calendar_event)
+
+    # availability-status
+    p_avail_status = subparsers.add_parser("availability-status", help="Check read-only Availability Grant status")
+    p_avail_status.add_argument("--client-secret", type=Path, default=None, help="Path to availability client secret JSON")
+    p_avail_status.set_defaults(func=cmd_availability_status)
+
+    # availability-login
+    p_avail_login = subparsers.add_parser("availability-login", help="Run interactive OAuth2 login for availability (calendar.freebusy)")
+    p_avail_login.add_argument("--client-secret", type=Path, default=None, help="Path to availability client secret JSON")
+    p_avail_login.add_argument("--no-browser", action="store_true", help="Do not automatically launch system browser")
+    p_avail_login.set_defaults(func=cmd_availability_login)
+
+    # availability-revoke
+    p_avail_revoke = subparsers.add_parser("availability-revoke", help="Revoke availability authorization and clear Keychain entry")
+    p_avail_revoke.set_defaults(func=cmd_availability_revoke)
 
     # cleanup
     p_cleanup = subparsers.add_parser("cleanup", help="Staged mailbox modification and cleanup")

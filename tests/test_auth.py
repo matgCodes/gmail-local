@@ -232,3 +232,208 @@ def test_calendar_auth_manager_defaults_and_isolation(tmp_path: Path):
     assert keyring_mock.get_password("gmail-local-modify", "test@example.com") == "modify-token"
 
 
+AVAILABILITY = "https://www.googleapis.com/auth/calendar.freebusy"
+OTHER_GRANTS = {
+    "gmail-local-retrieval": "retrieval-token",
+    "gmail-local-transmission": "transmission-token",
+    "gmail-local-modify": "modify-token",
+    "gmail-local-calendar": "calendar-token",
+}
+
+
+def _availability_manager(tmp_path: Path, keyring_mock: FakeKeyring) -> AuthManager:
+    secret_file = tmp_path / "client_secret_availability.json"
+    secret_file.write_text(json.dumps({"installed": {"client_id": "avail-c1", "token_uri": "uri"}}))
+    return AuthManager.for_availability(
+        client_secret_path=secret_file,
+        account="test@example.com",
+        keyring_backend=keyring_mock,
+    )
+
+
+def _mock_flow(mock_flow_cls, granted_scopes, refresh_token="avail-refresh-token"):
+    creds = MagicMock()
+    creds.granted_scopes = granted_scopes
+    creds.refresh_token = refresh_token
+    mock_flow_cls.from_client_secrets_file.return_value.run_local_server.return_value = creds
+
+
+def test_availability_auth_manager_defaults_and_isolation():
+    from gmail_local.config import (
+        AVAILABILITY_SCOPE,
+        CLIENT_SECRET_AVAILABILITY_FILE,
+        KEYCHAIN_SERVICE,
+        KEYCHAIN_SERVICE_AVAILABILITY,
+        KEYCHAIN_SERVICE_CALENDAR,
+        KEYCHAIN_SERVICE_MODIFY,
+        KEYCHAIN_SERVICE_TRANSMISSION,
+    )
+
+    keyring_mock = FakeKeyring()
+    for service, token in OTHER_GRANTS.items():
+        keyring_mock.set_password(service, "test@example.com", token)
+
+    avail_manager = AuthManager.for_availability(account="test@example.com", keyring_backend=keyring_mock)
+
+    assert AVAILABILITY_SCOPE == AVAILABILITY
+    assert avail_manager.scopes == [AVAILABILITY]
+    assert avail_manager.client_secret_path == CLIENT_SECRET_AVAILABILITY_FILE
+    assert avail_manager.keychain_service == KEYCHAIN_SERVICE_AVAILABILITY == "gmail-local-availability"
+    assert avail_manager.keychain_service not in {
+        KEYCHAIN_SERVICE,
+        KEYCHAIN_SERVICE_TRANSMISSION,
+        KEYCHAIN_SERVICE_MODIFY,
+        KEYCHAIN_SERVICE_CALENDAR,
+    }
+    assert avail_manager.verify_granted_scopes is True
+
+    status = avail_manager.get_status()
+    assert status["keychain_service"] == KEYCHAIN_SERVICE_AVAILABILITY
+    assert status["scope"] == AVAILABILITY
+    assert status["has_keychain_token"] is False
+
+    keyring_mock.set_password(KEYCHAIN_SERVICE_AVAILABILITY, "test@example.com", "avail-token")
+    assert avail_manager.get_status()["has_keychain_token"] is True
+
+    # availability-revoke clears only gmail-local-availability
+    with patch("requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        avail_manager.revoke()
+    assert mock_post.call_args.kwargs["params"] == {"token": "avail-token"}
+
+    assert avail_manager.get_status()["has_keychain_token"] is False
+    for service, token in OTHER_GRANTS.items():
+        assert keyring_mock.get_password(service, "test@example.com") == token
+
+
+def test_availability_auth_manager_has_no_meet_secret_fallback(tmp_path: Path):
+    meet_secret = tmp_path / "client_secret_meet.json"
+    meet_secret.write_text(json.dumps({"installed": {"client_id": "meet-c1", "token_uri": "uri"}}))
+
+    with patch("gmail_local.auth.CLIENT_SECRET_MEET_FILE", meet_secret), \
+         patch("gmail_local.auth.CLIENT_SECRET_CALENDAR_FILE", meet_secret):
+        manager = AuthManager.for_availability(
+            client_secret_path=tmp_path / "client_secret_availability.json",
+            keyring_backend=FakeKeyring(),
+        )
+        assert manager.client_secret_path == tmp_path / "client_secret_availability.json"
+        with pytest.raises(MissingClientSecretError):
+            manager.load_client_config()
+
+
+def test_existing_grants_do_not_verify_granted_scopes():
+    keyring_mock = FakeKeyring()
+    for factory in (
+        AuthManager.for_retrieval,
+        AuthManager.for_transmission,
+        AuthManager.for_modification,
+        AuthManager.for_calendar,
+    ):
+        assert factory(keyring_backend=keyring_mock).verify_granted_scopes is False
+
+
+@patch("gmail_local.auth.InstalledAppFlow")
+def test_availability_login_stores_token_when_granted_scopes_match(mock_flow_cls, tmp_path: Path):
+    keyring_mock = FakeKeyring()
+    manager = _availability_manager(tmp_path, keyring_mock)
+    _mock_flow(mock_flow_cls, [AVAILABILITY])
+
+    assert manager.run_interactive_login(open_browser=False) == "test@example.com"
+
+    mock_flow_cls.from_client_secrets_file.assert_called_once_with(
+        str(manager.client_secret_path),
+        scopes=[AVAILABILITY],
+        autogenerate_code_verifier=True,
+    )
+    assert keyring_mock.store == {("gmail-local-availability", "test@example.com"): "avail-refresh-token"}
+
+
+@pytest.mark.parametrize(
+    "granted_scopes",
+    [
+        [AVAILABILITY, "https://www.googleapis.com/auth/calendar.events.owned"],
+        [AVAILABILITY, "https://www.googleapis.com/auth/calendar"],
+        ["https://www.googleapis.com/auth/calendar.readonly"],
+        [],
+        None,
+    ],
+    ids=["extra-write-scope", "extra-full-calendar", "substituted", "empty", "not-reported"],
+)
+@patch("gmail_local.auth.InstalledAppFlow")
+def test_availability_login_discards_token_on_scope_mismatch(mock_flow_cls, granted_scopes, tmp_path: Path):
+    from gmail_local.auth import ScopeMismatchError
+
+    keyring_mock = FakeKeyring()
+    manager = _availability_manager(tmp_path, keyring_mock)
+    _mock_flow(mock_flow_cls, granted_scopes)
+
+    with pytest.raises(ScopeMismatchError) as excinfo:
+        manager.run_interactive_login(open_browser=False)
+
+    assert keyring_mock.store == {}
+    assert "avail-refresh-token" not in str(excinfo.value)
+    assert "gmail-local-availability" in str(excinfo.value)
+
+
+@patch("gmail_local.auth.InstalledAppFlow")
+def test_availability_login_converts_oauthlib_scope_change_warning(mock_flow_cls, tmp_path: Path, monkeypatch):
+    from oauthlib.oauth2.rfc6749.parameters import parse_token_response
+
+    from gmail_local.auth import ScopeMismatchError
+
+    keyring_mock = FakeKeyring()
+    manager = _availability_manager(tmp_path, keyring_mock)
+
+    # Produce the bare Warning the installed oauthlib raises when the token response scope differs.
+    monkeypatch.delenv("OAUTHLIB_RELAX_TOKEN_SCOPE", raising=False)
+    token_response = json.dumps({
+        "access_token": "leaked-access-token",
+        "refresh_token": "leaked-refresh-token",
+        "token_type": "Bearer",
+        "scope": f"{AVAILABILITY} https://www.googleapis.com/auth/calendar.events.owned",
+    })
+    with pytest.raises(Warning) as raised:
+        parse_token_response(token_response, scope=[AVAILABILITY])
+    mock_flow_cls.from_client_secrets_file.return_value.run_local_server.side_effect = raised.value
+
+    with pytest.raises(ScopeMismatchError) as excinfo:
+        manager.run_interactive_login(open_browser=False)
+
+    assert keyring_mock.store == {}
+    assert "Extra:     https://www.googleapis.com/auth/calendar.events.owned" in str(excinfo.value)
+    assert "leaked" not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__suppress_context__ is True
+
+
+@patch("gmail_local.auth.InstalledAppFlow")
+def test_availability_login_reraises_unrelated_warning(mock_flow_cls, tmp_path: Path):
+    keyring_mock = FakeKeyring()
+    manager = _availability_manager(tmp_path, keyring_mock)
+    mock_flow_cls.from_client_secrets_file.return_value.run_local_server.side_effect = Warning("unrelated")
+
+    with pytest.raises(Warning, match="unrelated"):
+        manager.run_interactive_login(open_browser=False)
+    assert keyring_mock.store == {}
+
+
+@patch("gmail_local.auth.InstalledAppFlow")
+def test_existing_grant_login_behavior_unchanged_by_scope_check(mock_flow_cls, tmp_path: Path):
+    keyring_mock = FakeKeyring()
+    secret_file = tmp_path / "client_secret_calendar.json"
+    secret_file.write_text(json.dumps({"installed": {"client_id": "cal-c1", "token_uri": "uri"}}))
+    manager = AuthManager.for_calendar(
+        client_secret_path=secret_file, account="test@example.com", keyring_backend=keyring_mock
+    )
+    _mock_flow(mock_flow_cls, None, refresh_token="cal-refresh-token")
+
+    manager.run_interactive_login(open_browser=False)
+    assert keyring_mock.store == {("gmail-local-calendar", "test@example.com"): "cal-refresh-token"}
+
+
+def test_availability_missing_token_suggests_availability_login(tmp_path: Path):
+    manager = _availability_manager(tmp_path, FakeKeyring())
+    with pytest.raises(MissingTokenError, match="gmail-local availability-login"):
+        manager.get_credentials()
+
+
