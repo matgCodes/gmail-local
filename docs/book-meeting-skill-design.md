@@ -1,8 +1,9 @@
 # Book-a-Meeting Skill: v1 System Design
 
-**Status:** Draft design, 2026-09-28. Not implementation authorization. Per
-`AGENTS.md`, new implementation work, OAuth setup, and live Google access each
-need the Operator's separate authorization.
+**Status:** Design complete, 2026-09-28. Gate A (offline implementation of #10
+and #11) is authorized; gates B and C are not. See section 13. Per `AGENTS.md`,
+new implementation work, OAuth setup, and live Google access each need the
+Operator's separate authorization.
 
 **Invocation:** "book a meeting with me", "set a meeting time with me".
 
@@ -671,15 +672,14 @@ invite, and set its UID to the event's `iCalUID`. Build it through the
 
 ## 11. Tracking
 
-v1 is tracked in issue #9. Its checklist covers:
+v1 is tracked in issue #9:
 
-1. ADR 0016: Availability Grant (`calendar.freebusy`) with a granted-scope check.
-2. `availability-login / -status / -revoke` commands.
-3. `availability windows` command with an offline-tested window engine.
-4. Book-a-meeting skill (v1 orchestration, registry reader, email template).
-5. Docs: `AGENTS.md` grant line, architecture diagram node.
-
-Not filed: (v2) Calendar Grant gaps 1-7 from section 9.
+| Issue | Work | Gate |
+|---|---|---|
+| #10 | Availability Grant: ADR 0016, `availability-login / -status / -revoke`, granted-scope check, docs | A (authorized) |
+| #11 | `availability windows`: freeBusy query and window engine | A (authorized) |
+| #12 | Book-a-meeting skill v1 (user skills folder, outside this repo) | Not authorized; checkpoint first |
+| #13 | Calendar Grant audit gap and v2 prerequisites (section 9) | Not authorized; not blocking v1 |
 
 ---
 
@@ -693,8 +693,40 @@ Not filed: (v2) Calendar Grant gaps 1-7 from section 9.
 | Booking detection in v1 | Operator says "they booked" |
 | Registry location | `~/.config/book-meeting/` |
 
-No design questions remain open. Next: Operator authorization for ADR 0016
-(Availability Grant), the first implementation step.
+No design questions remain open. Gate A is authorized (section 13); the first
+implementation step is drafting ADR 0016 under #10.
+
+---
+
+## 13. Authorization log
+
+### Gate A: offline implementation of #10 and #11 — authorized
+
+- Operator authorization recorded 2026-09-28 for the work tracked in issue #9,
+  covering issues #10 and #11.
+- **Covers:** drafting ADR 0016; `config.py` constants; `AuthManager.for_availability()`;
+  the `availability-login`, `availability-status`, and `availability-revoke`
+  commands; the post-login granted-scope check; the `availability.py` module with
+  the window engine and freeBusy client; the `availability windows` command; and
+  the repo docs named in #10 (`README.md`, repo `AGENTS.md`,
+  `docs/architecture_diagram.md`). All tests mock the OAuth flow, the Keychain,
+  and the Calendar API.
+- **Does not cover:**
+  - Google Cloud console work, creating or reading any client secret (gate B).
+  - Running `availability-login`, storing a real token, or any live Calendar
+    API call (gate C). Implementing `availability-login` is gate A; running it
+    is gate C.
+  - Changes to `calendar.py`, the Calendar Grant's scope, or the Transmission lane.
+  - The user skills folder (#12) and the parent `Dev_Tools/AGENTS.md`; both
+    need a scope checkpoint first.
+  - Anything in #13.
+- **Verification before merge:** `.venv/bin/pytest` and
+  `.venv/bin/python evals/run_evals.py` pass; `gmail-local --help` lists the new
+  commands.
+
+### Gate B: Google Cloud setup — not authorized
+
+### Gate C: live login and live freeBusy check — not authorized
 
 ---
 
