@@ -676,9 +676,9 @@ v1 is tracked in issue #9:
 
 | Issue | Work | Gate |
 |---|---|---|
-| #10 | Availability Grant: ADR 0016, `availability-login / -status / -revoke`, granted-scope check, docs | A (authorized) |
-| #11 | `availability windows`: freeBusy query and window engine | A (authorized) |
-| #12 | Book-a-meeting skill v1 (user skills folder, outside this repo) | Not authorized; checkpoint first |
+| #10 | Availability Grant: ADR 0016, `availability-login / -status / -revoke`, granted-scope check, docs | A (done, PR #15) |
+| #11 | `availability windows`: freeBusy query and window engine | A (done, PR #16) |
+| #12 | Book-a-meeting skill v1 (user skills folder, outside this repo) | Authorized 2026-09-28 (section 13) |
 | #13 | Calendar Grant audit gap and v2 prerequisites (section 9) | Not authorized; not blocking v1 |
 
 ---
@@ -723,6 +723,27 @@ implementation step is drafting ADR 0016 under #10.
 - **Verification before merge:** `.venv/bin/pytest` and
   `.venv/bin/python evals/run_evals.py` pass; `gmail-local --help` lists the new
   commands.
+
+### #12: book-a-meeting skill — authorized
+
+- Operator authorization recorded 2026-09-28 for issue #12.
+- **Location:** `~/.agents/skills/book-meeting/` holds the skill. A symlink
+  `~/.claude/skills/book-meeting -> ~/.agents/skills/book-meeting` (`ln -s`)
+  exposes it to Claude Code, the same arrangement as the existing skills.
+- **Covers:** the skill's files (`SKILL.md`, references, helper scripts) and
+  offline tests of those scripts, using fixture registries and mocked command
+  output.
+- **Does not cover:**
+  - Gates B and C: no Google Cloud work, no `availability-login`, no live
+    freeBusy call.
+  - Live `gmail-local search`, `draft`, or `send` runs while building. The skill
+    itself never runs `send`.
+  - The Operator's real booking pages or a registry with real URLs (Operator
+    setup, section 10). An example or fixture registry is fine.
+  - Changes to `src/` in this repo, the parent `Dev_Tools/AGENTS.md`, and the
+    section 8.4 rate-limit text fix. Each needs its own checkpoint.
+- **Verification:** the script tests pass, the symlink resolves, and
+  `SKILL.md` frontmatter parses.
 
 ### Gate B: Google Cloud setup — not authorized
 
