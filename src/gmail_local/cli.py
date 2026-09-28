@@ -2,11 +2,18 @@
 
 import argparse
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sys
 from typing import List
 
 from gmail_local.auth import AuthError, AuthManager
+from gmail_local.availability import (
+    AvailabilityError,
+    AvailabilityManager,
+    AvailabilityValidationError,
+    build_window_request,
+)
 from gmail_local.composer import (
     GmailDraftManager,
     create_frozen_draft,
@@ -301,6 +308,44 @@ def cmd_availability_revoke(retriever: GmailRetriever, args: argparse.Namespace)
     except Exception as e:
         print(f"Availability revocation error: {e}", file=sys.stderr)
         return 1
+
+
+def cmd_availability_windows(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Print open windows (start/end pairs and snapshot_at only) from a read-only freeBusy query."""
+    try:
+        request = build_window_request(
+            date_from=args.date_from,
+            date_to=args.date_to,
+            timezone_str=args.timezone,
+            calendars=args.calendars,
+            hours_json=args.hours_json,
+            buffer_min=args.buffer,
+            min_notice=args.min_notice,
+            max_advance=args.max_advance,
+            min_length_min=args.min_length,
+            count=args.count,
+        )
+    except AvailabilityValidationError as e:
+        print(f"Availability windows validation error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        result = AvailabilityManager().find_windows(request, purpose=args.purpose)
+    except (AvailabilityError, AuthError) as e:
+        print(f"Availability windows failed: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Availability windows failed with error: {e}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_availability(retriever: GmailRetriever, args: argparse.Namespace) -> int:
+    """Entry point when no availability subcommand is given."""
+    print("Usage: gmail-local availability windows [options]")
+    return 0
 
 
 def cmd_calendar_event_preview(retriever: GmailRetriever, args: argparse.Namespace) -> int:
@@ -1464,6 +1509,28 @@ def build_parser() -> argparse.ArgumentParser:
     # availability-revoke
     p_avail_revoke = subparsers.add_parser("availability-revoke", help="Revoke availability authorization and clear Keychain entry")
     p_avail_revoke.set_defaults(func=cmd_availability_revoke)
+
+    # availability
+    p_avail = subparsers.add_parser("availability", help="Read-only free/busy queries on the Availability Grant")
+    p_avail_sub = p_avail.add_subparsers(dest="availability_subcommand")
+
+    p_av_windows = p_avail_sub.add_parser(
+        "windows",
+        help="Suggest open windows inside weekly hours from a freeBusy query (prints start/end pairs and snapshot_at only)",
+    )
+    p_av_windows.add_argument("--from", dest="date_from", required=True, help="First day, YYYY-MM-DD (local to --timezone)")
+    p_av_windows.add_argument("--to", dest="date_to", required=True, help="Last day, YYYY-MM-DD, inclusive")
+    p_av_windows.add_argument("--timezone", required=True, help="IANA timezone (e.g. America/Los_Angeles)")
+    p_av_windows.add_argument("--calendars", default="primary", help="Comma-separated calendar IDs to check (default: primary)")
+    p_av_windows.add_argument("--hours-json", required=True, help='Weekly hours JSON, e.g. \'{"mon": [["09:00", "17:00"]]}\'')
+    p_av_windows.add_argument("--buffer", type=int, default=0, help="Minutes of padding around each busy block (default: 0)")
+    p_av_windows.add_argument("--min-notice", default="4h", help="Minimum notice from now, e.g. 30m, 4h, 1d (default: 4h)")
+    p_av_windows.add_argument("--max-advance", default="60d", help="Maximum advance from now, e.g. 60d (default: 60d)")
+    p_av_windows.add_argument("--min-length", type=int, default=60, help="Minimum window length in minutes (default: 60)")
+    p_av_windows.add_argument("--count", type=int, default=3, help="Number of windows to suggest (default: 3, max 10)")
+    p_av_windows.add_argument("--purpose", default="availability_windows", help="Operator-stated purpose for audit log")
+    p_av_windows.set_defaults(func=cmd_availability_windows)
+    p_avail.set_defaults(func=cmd_availability)
 
     # cleanup
     p_cleanup = subparsers.add_parser("cleanup", help="Staged mailbox modification and cleanup")

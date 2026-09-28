@@ -76,6 +76,12 @@ MAX_TRANSMISSION_ATTACHMENT_BYTES_AGGREGATE = 52_428_800  # 50 MiB
 # Calendar Bounds (Issue #1)
 MAX_EVENT_ATTENDEES = 10
 
+# Availability Bounds (Issue #11, ADR 0016)
+# freebusy.query documents calendarExpansionMax <= 50; it states no items[] maximum.
+MAX_FREEBUSY_CALENDARS = 50
+MAX_AVAILABILITY_WINDOW_COUNT = 10
+MAX_AVAILABILITY_RANGE_DAYS = 366
+
 # Cleanup Bounds (WAYFINDER_GMAIL_API_MODIFY_ACCESS.md, ADR 0010, ADR 0013)
 MAX_CLEANUP_BATCH_SIZE = 75
 
@@ -90,6 +96,10 @@ MAX_CONCURRENT_REQUESTS = 4
 MAX_RETRIES = 4  # 1 initial + 4 retries = 5 attempts
 MAX_RETRY_DEADLINE_SECS = 60
 INITIAL_BACKOFF_SCHEDULE = [1.0, 2.0, 4.0, 8.0]
+
+# Availability limiter (Issue #11): its own RateLimiter instance, never the Gmail budget.
+# Calendar quotas count requests, not units, so one freebusy.query costs 1.
+AVAILABILITY_RATE_LIMIT_MAX_UNITS = 300  # 50% of Calendar's 600 requests/min per-user limit
 
 # Google Method Quota Costs (Google Reference)
 METHOD_QUOTA_COSTS = {
@@ -113,4 +123,5 @@ METHOD_QUOTA_COSTS = {
     "users.messages.batchModify": 50,
     "events.insert": 10,
     "events.get": 5,
+    "freebusy.query": 1,
 }
