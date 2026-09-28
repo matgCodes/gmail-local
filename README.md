@@ -255,9 +255,25 @@ gmail-local availability-status
 # Fails and stores nothing if Google grants any scope other than calendar.freebusy
 gmail-local availability-login
 
-# 3. Revoke availability token and clear only the gmail-local-availability Keychain entry
+# 3. Suggest open windows (free stretches inside the weekly hours, at least --min-length long)
+gmail-local availability windows \
+  --from 2026-09-29 --to 2026-10-10 --timezone America/Los_Angeles \
+  --calendars primary --hours-json '{"mon": [["09:00", "12:00"], ["13:00", "17:00"]], "tue": [["09:00", "17:00"]]}' \
+  --buffer 0 --min-notice 4h --max-advance 60d --min-length 60 --count 3 \
+  --purpose book_meeting_windows
+
+# 4. Revoke availability token and clear only the gmail-local-availability Keychain entry
 gmail-local availability-revoke
 ```
+
+`availability windows` prints JSON with `snapshot_at` and `start`/`end` pairs only.
+freeBusy returns busy blocks, never event titles or attendees. If any requested
+calendar comes back with `errors[]` (for example `notFound`) or is missing from the
+response, the command exits non-zero and prints no windows; it never reports an
+unreadable calendar as free. Windows are suggestions, not holds. The audit entry
+records only the operation, the date range, and the window count. freeBusy runs on
+its own rate limiter sized to Calendar's per-user request quota, at 1 unit per query,
+so it never draws on the Gmail budget.
 
 ---
 

@@ -43,6 +43,7 @@ def test_parser_subcommands_registration():
         "availability-status",
         "availability-login",
         "availability-revoke",
+        "availability",
     }
     assert expected.issubset(subcommands)
 
@@ -52,8 +53,13 @@ def test_cli_help_lists_availability_commands(capsys):
         main(["--help"])
     assert excinfo.value.code == 0
     help_text = capsys.readouterr().out
-    for command in ("availability-status", "availability-login", "availability-revoke"):
+    for command in ("availability-status", "availability-login", "availability-revoke", "availability"):
         assert command in help_text
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["availability", "--help"])
+    assert excinfo.value.code == 0
+    assert "windows" in capsys.readouterr().out
 
 
 @patch("gmail_local.cli.GmailRetriever")
@@ -830,6 +836,113 @@ def test_cli_availability_login_with_extra_scope_stores_nothing_and_fails(
     assert "Availability authorization error" in captured.err
     assert "token was discarded" in captured.err
     assert "over-scoped-refresh-token" not in captured.out + captured.err
+
+
+AVAILABILITY_WINDOWS_ARGS = [
+    "availability", "windows",
+    "--from", "2026-09-29", "--to", "2026-09-30", "--timezone", "America/Los_Angeles",
+    "--calendars", "primary,work@example.com",
+    "--hours-json", '{"tue": [["09:00", "17:00"]], "wed": [["09:00", "17:00"]]}',
+    "--buffer", "0", "--min-notice", "4h", "--max-advance", "60d",
+    "--min-length", "60", "--count", "3", "--purpose", "book_meeting_windows",
+]
+
+
+def _availability_manager(tmp_path: Path, response):
+    from datetime import datetime, timezone
+
+    from gmail_local.audit import AuditLogger
+    from gmail_local.availability import AvailabilityManager
+
+    service = MagicMock()
+    service.freebusy.return_value.query.return_value.execute.return_value = response
+    manager = AvailabilityManager(
+        auth_manager=MagicMock(),
+        audit_logger=AuditLogger(log_path=tmp_path / "audit.log"),
+        clock=lambda: datetime(2026, 9, 28, 8, 0, tzinfo=timezone.utc),
+    )
+    manager._service = service
+    return manager, service
+
+
+def test_cli_availability_windows_prints_only_windows_and_snapshot(capsys, tmp_path: Path):
+    import json
+
+    response = {
+        "calendars": {
+            "primary": {"busy": [{"start": "2026-09-29T19:00:00Z", "end": "2026-09-29T20:00:00Z"}]},
+            "work@example.com": {"busy": []},
+        }
+    }
+    manager, service = _availability_manager(tmp_path, response)
+
+    with patch("gmail_local.cli.AvailabilityManager", return_value=manager):
+        exit_code = main(AVAILABILITY_WINDOWS_ARGS)
+
+    assert exit_code == 0
+    body = service.freebusy.return_value.query.call_args.kwargs["body"]
+    assert body["items"] == [{"id": "primary"}, {"id": "work@example.com"}]
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "snapshot_at": "2026-09-28T08:00:00+00:00",
+        "windows": [
+            {"start": "2026-09-29T09:00:00-07:00", "end": "2026-09-29T12:00:00-07:00"},
+            {"start": "2026-09-29T13:00:00-07:00", "end": "2026-09-29T17:00:00-07:00"},
+            {"start": "2026-09-30T09:00:00-07:00", "end": "2026-09-30T17:00:00-07:00"},
+        ],
+    }
+    log = (tmp_path / "audit.log").read_text(encoding="utf-8")
+    assert "op=availability_windows" in log
+    assert "details=from=2026-09-29_to=2026-09-30_windows=3" in log
+
+
+def test_cli_availability_windows_calendar_error_fails_without_windows(capsys, tmp_path: Path):
+    response = {
+        "calendars": {
+            "primary": {"busy": []},
+            "work@example.com": {"errors": [{"domain": "global", "reason": "notFound"}], "busy": []},
+        }
+    }
+    manager, _ = _availability_manager(tmp_path, response)
+
+    with patch("gmail_local.cli.AvailabilityManager", return_value=manager):
+        exit_code = main(AVAILABILITY_WINDOWS_ARGS)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "notFound" in captured.err
+    assert "availability_windows" not in (tmp_path / "audit.log").read_text(encoding="utf-8")
+
+
+@patch("gmail_local.cli.AvailabilityManager")
+def test_cli_availability_windows_validation_error_makes_no_call(mock_manager_cls, capsys):
+    args = [a if a != "4h" else "four hours" for a in AVAILABILITY_WINDOWS_ARGS]
+    exit_code = main(args)
+
+    assert exit_code == 1
+    mock_manager_cls.assert_not_called()
+    assert "--min-notice" in capsys.readouterr().err
+
+
+def test_cli_availability_windows_missing_token_points_to_availability_login(capsys, tmp_path: Path):
+    from gmail_local.auth import MissingTokenError
+
+    manager, service = _availability_manager(tmp_path, {})
+    manager._service = None
+    manager.auth_manager.get_credentials.side_effect = MissingTokenError(
+        "No refresh token found in Keychain for service 'gmail-local-availability'. "
+        "Run 'gmail-local availability-login' to authorize."
+    )
+
+    with patch("gmail_local.cli.AvailabilityManager", return_value=manager):
+        exit_code = main(AVAILABILITY_WINDOWS_ARGS)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "availability-login" in captured.err
+    service.freebusy.assert_not_called()
 
 
 def test_cli_calendar_event_preview(capsys):
