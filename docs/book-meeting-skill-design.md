@@ -60,9 +60,9 @@ read-only calendar grant (section 8).
 **Unknown**
 - Whether Google's booking confirmation gives the booker a reschedule or cancel
   path, and what it looks like.
-- Whether a Desktop OAuth client that already holds a `calendar.events.owned`
-  refresh token can issue a second, separate token with only
-  `calendar.freebusy`. This is expected, but not tested.
+- Whether the Availability Grant's Desktop client belongs in the shared Google
+  Cloud project. That is the open question in issue #5, which now covers five
+  clients instead of four.
 
 **Assumed (verify during setup)**
 - The booking page shows times in the booker's local time zone.
@@ -458,11 +458,11 @@ def open_windows(busy, s, window, tz, now, min_length, count):
 
 | Piece | Where | Notes |
 |---|---|---|
-| Availability Grant | `gmail-local availability-login / -status / -revoke` | Scope `calendar.freebusy` only. Keychain `gmail-local-availability`. After login, check that the granted scopes equal the requested scopes; stop if any write scope appears. |
+| Availability Grant | `gmail-local availability-login / -status / -revoke` | Scope `calendar.freebusy` only. Own Desktop client (`client_secret_availability.json`) and Keychain `gmail-local-availability`. After login, check that the granted scopes equal the requested scopes; stop if any write scope appears. |
 | `availability windows` command | new `availability.py` + CLI | freeBusy + window engine. Audit entry: operation, date range, window count. No event data exists to leak. |
 | Booking page registry | `~/.config/book-meeting/booking_pages.json` | Three pages + shared settings, created by the Operator. Skill-owned, not gmail-local config. |
 | Skill | user-level skills directory | Orchestration only. Calls the CLI; holds no credentials. |
-| ADR 0015 | `docs/adr/` | Availability Grant (section 8). |
+| ADR 0016 | `docs/adr/` | Availability Grant (section 8). Numbered after #5, which claims ADR 0015. |
 | `AGENTS.md`, architecture diagram | repo | Add the Availability Grant line and diagram node. |
 
 Nothing in v1 changes the Calendar Grant, `calendar.py`, or the Transmission lane.
@@ -500,7 +500,7 @@ by revoking a token.
 
 | # | Option | Changes | Verdict |
 |---|---|---|---|
-| L1 | **Separate Availability Grant** (`calendar.freebusy`, own Keychain entry) | ADR 0015 + `AGENTS.md` line. ADR 0014 text unchanged. | **Go, with conditions** (below) |
+| L1 | **Separate Availability Grant** (`calendar.freebusy`, own Desktop client, client secret, and Keychain entry) | ADR 0016 + `AGENTS.md` line. ADR 0014 text unchanged. | **Go, with conditions** (below) |
 | L2 | Add `calendar.freebusy` to the Calendar Grant | Amends ADR 0014 decision 1. Re-consent. | **No-go.** Every unattended availability lookup would load a write-capable token, and revoking one would revoke both. |
 | L3 | Pre-authorized Slot Offer (Operator approves a fingerprinted set of slots once; a pick inside it counts as confirmed) | Amends ADR 0014 decision 4 | **Defer.** v1 doesn't need it because Google's page does the booking. Red flag: the pick would arrive by email, and `AGENTS.md` says email content cannot authorize a downstream action. It would need explicit "selects, doesn't authorize" wording and a bounded-harm argument. |
 | L4 | Hosted booking server holding the Calendar token | New ADR; token leaves Keychain | **No-go.** Breaks the Keychain-only credential rule. |
@@ -553,10 +553,15 @@ What still has to be settled before L5 is a go:
    token and `events.insert` fails with 403.
 4. `availability-revoke` clears only `gmail-local-availability`.
 
-**What would change the verdict:** if condition 2 fails because Google merges
-scopes across tokens from the same client, move to a separate OAuth client
-(`client_secret_availability.json`), following ADR 0004's one-client-per-grant
-pattern.
+**Client model:** the grant gets its own Desktop OAuth client and
+`client_secret_availability.json`, matching the one-client-per-grant pattern the
+four existing grants follow (ADR 0004, 0010, 0014). Reusing the Calendar
+client's secret was considered and dropped: it saves one setup step but breaks
+that pattern and would make condition 2 depend on Google's token behavior.
+
+**What would change the verdict:** issue #5 deciding that calendar-family
+clients move to their own Google Cloud project. The Availability Grant would
+move with the Calendar Grant.
 
 **Exit condition:** any availability token that carries a write scope ends L1
 until the cause is found.
@@ -565,6 +570,12 @@ until the cause is found.
 
 **What's changing (future):** the calendar code and the new availability code
 move out of `src/gmail_local/` into their own package or directory.
+
+**Prior tracker history:** issue #4 (closed) proposed renaming the CLI and
+package and was closed as the wrong layer, because renaming Keychain services
+orphans stored tokens. Issue #5 (open) covers the layer that matters, the shared
+Google Cloud project. This scan agrees with both: keep Keychain service names,
+and treat the project boundary as #5's decision.
 
 **Search method (re-runnable):**
 ```bash
@@ -660,7 +671,7 @@ invite, and set its UID to the event's `iCalUID`. Build it through the
 
 ## 11. Proposed issues (not opened)
 
-1. ADR 0015: Availability Grant (`calendar.freebusy`) with a granted-scope check.
+1. ADR 0016: Availability Grant (`calendar.freebusy`) with a granted-scope check.
 2. `availability-login / -status / -revoke` commands.
 3. `availability windows` command with an offline-tested window engine.
 4. Book-a-meeting skill (v1 orchestration, registry reader, email template).
@@ -679,7 +690,7 @@ invite, and set its UID to the event's `iCalUID`. Build it through the
 | Booking detection in v1 | Operator says "they booked" |
 | Registry location | `~/.config/book-meeting/` |
 
-No design questions remain open. Next: Operator authorization for ADR 0015
+No design questions remain open. Next: Operator authorization for ADR 0016
 (Availability Grant), the first implementation step.
 
 ---
