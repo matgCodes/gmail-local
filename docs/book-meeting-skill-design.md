@@ -669,14 +669,17 @@ invite, and set its UID to the event's `iCalUID`. Build it through the
 
 ---
 
-## 11. Proposed issues (not opened)
+## 11. Tracking
+
+v1 is tracked in issue #9. Its checklist covers:
 
 1. ADR 0016: Availability Grant (`calendar.freebusy`) with a granted-scope check.
 2. `availability-login / -status / -revoke` commands.
 3. `availability windows` command with an offline-tested window engine.
 4. Book-a-meeting skill (v1 orchestration, registry reader, email template).
 5. Docs: `AGENTS.md` grant line, architecture diagram node.
-6. (v2) Calendar Grant gaps 1-7 from section 9.
+
+Not filed: (v2) Calendar Grant gaps 1-7 from section 9.
 
 ---
 
