@@ -2,14 +2,14 @@
 
 A locally operated Gmail and Calendar capability providing least-privilege search, message reading, attachment downloads, guarded outbound drafting, staged mailbox cleanup, autonomous inbox triage, and Calendar/Meet event creation for personal accounts.
 
-Governed by [WAYFINDER_GMAIL_API_READ_ACCESS.md](WAYFINDER_GMAIL_API_READ_ACCESS.md), [WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md](WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md), [WAYFINDER_GMAIL_API_MODIFY_ACCESS.md](WAYFINDER_GMAIL_API_MODIFY_ACCESS.md), [WAYFINDER_INBOX_TRIAGE_PIPELINE.md](WAYFINDER_INBOX_TRIAGE_PIPELINE.md), [ADR 0014](docs/adr/0014-calendar-and-meet-integration-architecture.md), and [AGENTS.md](AGENTS.md).
+Governed by [WAYFINDER_GMAIL_API_READ_ACCESS.md](WAYFINDER_GMAIL_API_READ_ACCESS.md), [WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md](WAYFINDER_GMAIL_API_TRANSMISSION_ACCESS.md), [WAYFINDER_GMAIL_API_MODIFY_ACCESS.md](WAYFINDER_GMAIL_API_MODIFY_ACCESS.md), [WAYFINDER_INBOX_TRIAGE_PIPELINE.md](WAYFINDER_INBOX_TRIAGE_PIPELINE.md), [ADR 0014](docs/adr/0014-calendar-and-meet-integration-architecture.md), [ADR 0016](docs/adr/0016-read-only-availability-grant.md), and [AGENTS.md](AGENTS.md).
 
 ---
 
 ## Security Boundaries & Guarantees
 
 1. **Strict Read-Only Retrieval Scope:** Retrieval requests only `https://www.googleapis.com/auth/gmail.readonly`. That credential exposes no send, modify, label, trash, delete, settings, or administration operations; every write capability lives behind a separate grant and gate (see 2).
-2. **Strict Credential Separation (ADR 0003, 0004, 0010 & 0014):** Each capability uses an isolated OAuth grant with its own desktop client secret and macOS Keychain service. The retrieval credential is never upgraded.
+2. **Strict Credential Separation (ADR 0003, 0004, 0010, 0014 & 0016):** Each capability uses an isolated OAuth grant with its own desktop client secret and macOS Keychain service. The retrieval credential is never upgraded.
 
    | Grant | Scope | Client secret | Keychain service |
    | --- | --- | --- | --- |
@@ -17,6 +17,9 @@ Governed by [WAYFINDER_GMAIL_API_READ_ACCESS.md](WAYFINDER_GMAIL_API_READ_ACCESS
    | Transmission | `gmail.compose` | `client_secret_transmission.json` | `gmail-local-transmission` |
    | Modification | `gmail.modify` | `client_secret_modify.json` | `gmail-local-modify` |
    | Calendar | `calendar.events.owned` | `client_secret_calendar.json` | `gmail-local-calendar` |
+   | Availability (read-only) | `calendar.freebusy` | `client_secret_availability.json` | `gmail-local-availability` |
+
+   The Availability Grant can only read free/busy times. After `availability-login`, the granted scopes must equal `calendar.freebusy` exactly; any other result discards the token, stores nothing, and exits non-zero (ADR 0016).
 3. **Cryptographic Frozen Drafts (ADR 0009):** Outbound emails are packaged into immutable `FrozenDraft` containers with deterministic canonical JSON hashing and SHA-256 fingerprinting. Any change to headers, body, or attachment digests invalidates the fingerprint.
 4. **Manual Write Gates:** AI agents cannot autonomously perform any write. Every mutating command requires explicit human operator authorization, either an interactive confirmation prompt or an explicit `--confirm` flag in scripted environments. Non-interactive invocations without `--confirm` fail immediately with exit code 1.
    * **Manual Send Gate** (ADR 0001, 0009) guards `gmail-local send`.
@@ -60,7 +63,7 @@ To connect to your personal Gmail account:
    * User Type: **External**.
    * App name: `Gmail Local Tools`.
    * User support email & Developer contact: `your-email@gmail.com`.
-   * Scopes: Add `https://www.googleapis.com/auth/gmail.readonly` (Retrieval), `https://www.googleapis.com/auth/gmail.compose` (Transmission), `https://www.googleapis.com/auth/gmail.modify` (Modification), and `https://www.googleapis.com/auth/calendar.events.owned` (Calendar).
+   * Scopes: Add `https://www.googleapis.com/auth/gmail.readonly` (Retrieval), `https://www.googleapis.com/auth/gmail.compose` (Transmission), `https://www.googleapis.com/auth/gmail.modify` (Modification), `https://www.googleapis.com/auth/calendar.events.owned` (Calendar), and `https://www.googleapis.com/auth/calendar.freebusy` (Availability).
    * Test Users: Add `your-email@gmail.com`.
 4. **Create OAuth Client IDs (Desktop app):**
    Create one Desktop client per grant so each credential can be revoked independently (ADR 0003, 0004):
@@ -68,6 +71,7 @@ To connect to your personal Gmail account:
    * Transmission Client: `Gmail Local Transmission Desktop Client` -> download to `~/.config/gmail-local/client_secret_transmission.json`
    * Modification Client: `Gmail Local Modify Desktop Client` -> download to `~/.config/gmail-local/client_secret_modify.json`
    * Calendar Client: `Gmail Local Calendar Desktop Client` -> download to `~/.config/gmail-local/client_secret_calendar.json` (a `client_secret_meet.json` at the same path is accepted as a fallback)
+   * Availability Client: `Gmail Local Availability Desktop Client` -> download to `~/.config/gmail-local/client_secret_availability.json` (no fallback; never reuse the Calendar client). Whether this client stays in the shared project is open in issue #5.
 5. **Secure Local Secrets:**
    ```bash
    chmod 600 ~/.config/gmail-local/client_secret*.json
@@ -236,6 +240,23 @@ gmail-local calendar-event create \
 
 # 5. Revoke calendar token and clear Keychain
 gmail-local calendar-revoke
+```
+
+### Availability Operations (`calendar.freebusy`, read-only)
+
+A separate read-only grant for reading free/busy times, used by the book-a-meeting
+skill. It cannot create, change, or read events (ADR 0016).
+
+```bash
+# 1. Check availability connection status
+gmail-local availability-status
+
+# 2. Authenticate availability (system browser with PKCE flow)
+# Fails and stores nothing if Google grants any scope other than calendar.freebusy
+gmail-local availability-login
+
+# 3. Revoke availability token and clear only the gmail-local-availability Keychain entry
+gmail-local availability-revoke
 ```
 
 ---

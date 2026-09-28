@@ -10,7 +10,9 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from gmail_local.config import (
+    AVAILABILITY_SCOPE,
     CALENDAR_SCOPE,
+    CLIENT_SECRET_AVAILABILITY_FILE,
     CLIENT_SECRET_CALENDAR_FILE,
     CLIENT_SECRET_FILE,
     CLIENT_SECRET_MEET_FILE,
@@ -18,6 +20,7 @@ from gmail_local.config import (
     CLIENT_SECRET_TRANSMISSION_FILE,
     DEFAULT_ACCOUNT,
     KEYCHAIN_SERVICE,
+    KEYCHAIN_SERVICE_AVAILABILITY,
     KEYCHAIN_SERVICE_CALENDAR,
     KEYCHAIN_SERVICE_MODIFY,
     KEYCHAIN_SERVICE_TRANSMISSION,
@@ -43,6 +46,10 @@ class TokenRevocationError(AuthError):
     """Raised when revoking the token fails."""
 
 
+class ScopeMismatchError(AuthError):
+    """Raised when Google grants scopes other than exactly the requested ones (ADR 0016)."""
+
+
 class AuthManager:
     """Manages Desktop OAuth authorization flow and Keychain credential storage."""
 
@@ -53,12 +60,14 @@ class AuthManager:
         account: str = DEFAULT_ACCOUNT,
         keyring_backend: Any = keyring,
         scopes: Optional[List[str]] = None,
+        verify_granted_scopes: bool = False,
     ):
         self.client_secret_path = client_secret_path
         self.keychain_service = keychain_service
         self.account = account
         self.keyring = keyring_backend
         self.scopes = scopes if scopes is not None else [RETRIEVAL_SCOPE]
+        self.verify_granted_scopes = verify_granted_scopes
 
     @classmethod
     def for_retrieval(
@@ -135,6 +144,38 @@ class AuthManager:
             scopes=[CALENDAR_SCOPE],
         )
 
+    @classmethod
+    def for_availability(
+        cls,
+        client_secret_path: Path = CLIENT_SECRET_AVAILABILITY_FILE,
+        keychain_service: str = KEYCHAIN_SERVICE_AVAILABILITY,
+        account: str = DEFAULT_ACCOUNT,
+        keyring_backend: Any = keyring,
+    ) -> "AuthManager":
+        """Factory creating an AuthManager bound to the read-only Availability Grant (ADR 0016)."""
+        return cls(
+            client_secret_path=client_secret_path,
+            keychain_service=keychain_service,
+            account=account,
+            keyring_backend=keyring_backend,
+            scopes=[AVAILABILITY_SCOPE],
+            verify_granted_scopes=True,
+        )
+
+    def _scope_mismatch(self, granted: Optional[List[str]]) -> ScopeMismatchError:
+        requested = set(self.scopes)
+        granted_set = set(granted or ())
+        extra = sorted(granted_set - requested)
+        missing = sorted(requested - granted_set)
+        return ScopeMismatchError(
+            "Google granted scopes that differ from the requested scopes; the token was discarded "
+            f"and nothing was stored in Keychain service '{self.keychain_service}'.\n"
+            f"Requested: {', '.join(sorted(requested))}\n"
+            f"Extra:     {', '.join(extra) or 'none'}\n"
+            f"Missing:   {', '.join(missing) or 'none'}\n"
+            "Review this app's access at https://myaccount.google.com/permissions before retrying."
+        )
+
     def load_client_config(self) -> Dict[str, Any]:
         """Loads and verifies the Desktop App client JSON configuration."""
         if not self.client_secret_path.exists():
@@ -166,12 +207,22 @@ class AuthManager:
             autogenerate_code_verifier=True,  # Enforces PKCE S256
         )
 
-        creds = flow.run_local_server(
-            port=0,
-            open_browser=open_browser,
-            prompt="consent",
-            access_type="offline",
-        )
+        try:
+            creds = flow.run_local_server(
+                port=0,
+                open_browser=open_browser,
+                prompt="consent",
+                access_type="offline",
+            )
+        except Warning as w:
+            # oauthlib aborts the token exchange with a bare Warning when the returned
+            # scope differs from the request (unless OAUTHLIB_RELAX_TOKEN_SCOPE is set).
+            if not self.verify_granted_scopes or not hasattr(w, "new_scope"):
+                raise
+            raise self._scope_mismatch(list(w.new_scope)) from None
+
+        if self.verify_granted_scopes and set(creds.granted_scopes or ()) != set(self.scopes):
+            raise self._scope_mismatch(creds.granted_scopes)
 
         if not creds.refresh_token:
             raise AuthError(
@@ -195,6 +246,7 @@ class AuthManager:
                 KEYCHAIN_SERVICE_TRANSMISSION: "compose-login",
                 KEYCHAIN_SERVICE_MODIFY: "modify-login",
                 KEYCHAIN_SERVICE_CALENDAR: "calendar-login",
+                KEYCHAIN_SERVICE_AVAILABILITY: "availability-login",
             }.get(self.keychain_service, "login")
             raise MissingTokenError(
                 f"No refresh token found in Keychain for service '{self.keychain_service}', "

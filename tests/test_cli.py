@@ -40,8 +40,20 @@ def test_parser_subcommands_registration():
         "calendar-login",
         "calendar-revoke",
         "calendar-event",
+        "availability-status",
+        "availability-login",
+        "availability-revoke",
     }
     assert expected.issubset(subcommands)
+
+
+def test_cli_help_lists_availability_commands(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--help"])
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    for command in ("availability-status", "availability-login", "availability-revoke"):
+        assert command in help_text
 
 
 @patch("gmail_local.cli.GmailRetriever")
@@ -720,6 +732,104 @@ def test_cli_calendar_revoke_command(mock_auth_cls, capsys):
     mock_auth.revoke.assert_called_once()
     captured = capsys.readouterr()
     assert "Successfully revoked calendar credentials" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_availability_status_command(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_availability.return_value
+    mock_auth.get_status.return_value = {
+        "account": "user@example.com",
+        "keychain_service": "gmail-local-availability",
+        "has_client_secret": False,
+        "has_keychain_token": False,
+        "is_valid": False,
+        "scope": "https://www.googleapis.com/auth/calendar.freebusy",
+    }
+
+    exit_code = main(["availability-status"])
+    assert exit_code == 1
+    mock_auth_cls.for_calendar.assert_not_called()
+    captured = capsys.readouterr()
+    assert "=== Gmail Local Availability Status ===" in captured.out
+    assert "gmail-local-availability" in captured.out
+    assert "client_secret_availability.json" in captured.out
+    assert "client_secret_meet.json" not in captured.out
+    assert "run availability-login" in captured.out
+    assert "calendar.freebusy" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_availability_login_command(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_availability.return_value
+    mock_auth.run_interactive_login.return_value = "user@example.com"
+
+    exit_code = main(["availability-login", "--no-browser"])
+    assert exit_code == 0
+    mock_auth.run_interactive_login.assert_called_once_with(open_browser=False)
+    captured = capsys.readouterr()
+    assert "calendar.freebusy" in captured.out
+    assert "Successfully authorized availability" in captured.out
+
+
+@patch("gmail_local.cli.AuthManager")
+def test_cli_availability_revoke_command(mock_auth_cls, capsys):
+    mock_auth = mock_auth_cls.for_availability.return_value
+
+    exit_code = main(["availability-revoke"])
+    assert exit_code == 0
+    mock_auth.revoke.assert_called_once()
+    mock_auth_cls.for_calendar.assert_not_called()
+    captured = capsys.readouterr()
+    assert "Successfully revoked availability credentials" in captured.out
+
+
+@pytest.mark.parametrize(
+    "granted_scopes",
+    [
+        [
+            "https://www.googleapis.com/auth/calendar.freebusy",
+            "https://www.googleapis.com/auth/calendar.events.owned",
+        ],
+        ["https://www.googleapis.com/auth/calendar.freebusy", "https://www.googleapis.com/auth/gmail.readonly"],
+    ],
+    ids=["calendar-write", "gmail-read"],
+)
+@patch("gmail_local.auth.InstalledAppFlow")
+def test_cli_availability_login_with_extra_scope_stores_nothing_and_fails(
+    mock_flow_cls, granted_scopes, capsys, tmp_path: Path
+):
+    import json
+
+    from gmail_local.auth import AuthManager
+
+    class FakeKeyring:
+        def __init__(self):
+            self.store = {}
+
+        def set_password(self, service, username, password):
+            self.store[(service, username)] = password
+
+        def get_password(self, service, username):
+            return self.store.get((service, username))
+
+    keyring_mock = FakeKeyring()
+    secret_file = tmp_path / "client_secret_availability.json"
+    secret_file.write_text(json.dumps({"installed": {"client_id": "avail-c1", "token_uri": "uri"}}))
+    real_manager = AuthManager.for_availability(
+        client_secret_path=secret_file, account="user@example.com", keyring_backend=keyring_mock
+    )
+    creds = MagicMock(granted_scopes=granted_scopes, refresh_token="over-scoped-refresh-token")
+    mock_flow_cls.from_client_secrets_file.return_value.run_local_server.return_value = creds
+
+    with patch.object(AuthManager, "for_availability", return_value=real_manager):
+        exit_code = main(["availability-login", "--no-browser", "--client-secret", str(secret_file)])
+
+    assert exit_code == 1
+    assert keyring_mock.store == {}
+    captured = capsys.readouterr()
+    assert "Availability authorization error" in captured.err
+    assert "token was discarded" in captured.err
+    assert "over-scoped-refresh-token" not in captured.out + captured.err
 
 
 def test_cli_calendar_event_preview(capsys):

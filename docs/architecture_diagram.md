@@ -7,19 +7,24 @@ execute. See `docs/adr/` for the governing decisions.
 ```mermaid
 flowchart TD
     %% 1. Auth & Credentials
-    subgraph Auth ["1. Auth & Credential Isolation (ADR 0003, 0004)"]
+    subgraph Auth ["1. Auth & Credential Isolation (ADR 0003, 0004, 0016)"]
         GCP["Google Cloud Project (External)"] --> ClientRead["Client A: Retrieval (gmail.readonly)"]
         GCP --> ClientSend["Client B: Transmission (gmail.compose)"]
         GCP --> ClientMod["Client C: Modification (gmail.modify)"]
         GCP --> ClientCal["Client D: Calendar (calendar.events.owned)"]
+        GCP --> ClientAvail["Client E: Availability, read-only (calendar.freebusy)"]
         ClientRead --> PKCE["Loopback + PKCE S256"]
         ClientSend --> PKCE
         ClientMod --> PKCE
         ClientCal --> PKCE
+        ClientAvail --> PKCE
         PKCE --> KeyRead[("Keychain: gmail-local-retrieval")]
         PKCE --> KeySend[("Keychain: gmail-local-transmission")]
         PKCE --> KeyMod[("Keychain: gmail-local-modify")]
         PKCE --> KeyCal[("Keychain: gmail-local-calendar")]
+        PKCE --> ScopeCheck{"Availability: granted scopes == calendar.freebusy?"}
+        ScopeCheck -- "Yes" --> KeyAvail[("Keychain: gmail-local-availability")]
+        ScopeCheck -- "No" --> Discard["Discard Token, Store Nothing, Exit 1"]
     end
 
     %% 2. Retrieval Pipeline
