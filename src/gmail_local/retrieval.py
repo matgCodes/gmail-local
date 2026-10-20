@@ -13,6 +13,7 @@ from googleapiclient.errors import HttpError
 from gmail_local.audit import AuditLogger
 from gmail_local.auth import AuthManager
 from gmail_local.config import (
+    DEFAULT_ACCOUNT,
     DEFAULT_SEARCH_BOUND,
     MAX_ATTACHMENT_BYTES_AGGREGATE,
     MAX_ATTACHMENT_BYTES_PER_FILE,
@@ -60,10 +61,12 @@ class GmailRetriever:
         rate_limiter: Optional[RateLimiter] = None,
         audit_logger: Optional[AuditLogger] = None,
         service: Optional[Resource] = None,
+        account: Optional[str] = None,
     ):
-        self.auth = auth_manager or AuthManager()
+        account = account or DEFAULT_ACCOUNT
+        self.auth = auth_manager or AuthManager.for_retrieval(account=account)
         self.limiter = rate_limiter or RateLimiter()
-        self.audit = audit_logger or AuditLogger()
+        self.audit = audit_logger or AuditLogger(account=account)
         self._service = service
 
     def _get_service(self) -> Resource:

@@ -7,7 +7,7 @@ execute. See `docs/adr/` for the governing decisions.
 ```mermaid
 flowchart TD
     %% 1. Auth & Credentials
-    subgraph Auth ["1. Auth & Credential Isolation (ADR 0003, 0004, 0016)"]
+    subgraph Auth ["1. Auth & Credential Isolation (ADR 0003, 0004, 0016, 0017)"]
         GCP["Google Cloud Project (External)"] --> ClientRead["Client A: Retrieval (gmail.readonly)"]
         GCP --> ClientSend["Client B: Transmission (gmail.compose)"]
         GCP --> ClientMod["Client C: Modification (gmail.modify)"]
@@ -18,7 +18,9 @@ flowchart TD
         ClientMod --> PKCE
         ClientCal --> PKCE
         ClientAvail --> PKCE
-        PKCE --> KeyRead[("Keychain: gmail-local-retrieval")]
+        PKCE --> IdCheck{"Retrieval: getProfile mailbox == --account?"}
+        IdCheck -- "Yes" --> KeyRead[("Keychain: gmail-local-retrieval")]
+        IdCheck -- "No" --> Revoke["Revoke Token, Store Nothing, Exit 1"]
         PKCE --> KeySend[("Keychain: gmail-local-transmission")]
         PKCE --> KeyMod[("Keychain: gmail-local-modify")]
         PKCE --> KeyCal[("Keychain: gmail-local-calendar")]
@@ -104,3 +106,13 @@ flowchart TD
         Download -.-> Sink
     end
 ```
+
+## Account Selection (ADR 0017)
+
+Keychain entries are keyed by grant service and account address, so several
+accounts can hold tokens side by side. A command acts as the account named by
+`--account`, then `GMAIL_ACCOUNT`, then `~/.config/gmail-local/account.txt`, and
+prints `account: <address>` to stderr. The retrieval `login` refuses a token
+whose mailbox differs from that address. Until phase 2 of issue #18, only
+read-only retrieval commands accept a non-default `--account`. The state
+directory and audit log are shared, and each audit line ends with `acct=<address>`.

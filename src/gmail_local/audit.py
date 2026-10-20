@@ -1,5 +1,6 @@
 """Minimal, append-only, rotating local audit logger."""
 
+import dataclasses
 import logging
 import os
 from logging.handlers import RotatingFileHandler
@@ -9,6 +10,7 @@ from typing import Optional
 from gmail_local.config import (
     AUDIT_LOG_BACKUP_COUNT,
     AUDIT_LOG_FILE,
+    DEFAULT_ACCOUNT,
     MAX_AUDIT_LOG_BYTES,
 )
 from gmail_local.models import AuditEntry
@@ -22,10 +24,12 @@ class AuditLogger:
         log_path: Optional[Path] = None,
         max_bytes: int = MAX_AUDIT_LOG_BYTES,
         backup_count: int = AUDIT_LOG_BACKUP_COUNT,
+        account: Optional[str] = None,
     ):
         self.log_path = log_path or AUDIT_LOG_FILE
         self.max_bytes = max_bytes
         self.backup_count = backup_count
+        self.account = account or DEFAULT_ACCOUNT
         self._logger = self._setup_logger()
 
     def _setup_logger(self) -> logging.Logger:
@@ -64,7 +68,9 @@ class AuditLogger:
         return logger
 
     def record(self, entry: AuditEntry) -> None:
-        """Write a sanitized audit entry line to the audit log."""
+        """Write a sanitized audit entry line to the audit log, stamped with this logger's account."""
+        if entry.account is None:
+            entry = dataclasses.replace(entry, account=self.account)
         self._logger.info(entry.to_log_line())
         # Re-enforce 0600 permissions
         if self.log_path.exists():

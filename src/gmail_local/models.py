@@ -71,6 +71,7 @@ class AuditEntry:
     filename: Optional[str] = None
     destination: Optional[str] = None
     details: Optional[str] = None
+    account: Optional[str] = None
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -96,6 +97,8 @@ class AuditEntry:
             fields.append(f"dest={self.destination}")
         if self.details:
             fields.append(f"details={self.details.replace(' ', '_')}")
+        if self.account:
+            fields.append(f"acct={self.account}")
         return " ".join(fields)
 
 
