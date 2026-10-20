@@ -21,11 +21,14 @@ from gmail_local.composer import (
     save_draft_locally,
 )
 from gmail_local.config import (
+    DEFAULT_ACCOUNT,
     DEFAULT_SEARCH_BOUND,
     DRAFTS_DIR,
     MAX_CLEANUP_BATCH_SIZE,
     MAX_SEARCH_BOUND,
     PLANS_DIR,
+    resolve_account,
+    same_account,
 )
 from gmail_local.calendar import (
     CalendarConferenceError,
@@ -68,6 +71,13 @@ from gmail_local.triage import (
 )
 
 
+# Phase 1 of issue #18 (ADR 0017): only read-only retrieval commands may select a
+# non-default account. Write lanes stay on the default until artifacts record their account.
+ACCOUNT_SELECTABLE_COMMANDS = frozenset(
+    {"status", "login", "revoke", "search", "preview", "read", "attachments", "download", "history", "thread", "labels"}
+)
+
+
 def cmd_status(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     """Report account and authorization status without exposing token secrets."""
     status = retriever.auth.get_status()
@@ -78,7 +88,10 @@ def cmd_status(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     print(f"Keychain Token:   {'Present' if status['has_keychain_token'] else 'Not stored (run login)'}")
     print(f"Token Valid:      {'Yes (active & refreshable)' if status['is_valid'] else 'No'}")
     print(f"Scope:            {status['scope']}")
-    return 0 if status["is_valid"] else 1
+    if status.get("mailbox") is not None:
+        verdict = "matches account" if status["mailbox_matches"] else "DOES NOT MATCH account"
+        print(f"Mailbox:          {status['mailbox']} ({verdict})")
+    return 0 if status["is_valid"] and status.get("mailbox_matches") is not False else 1
 
 
 def cmd_login(retriever: GmailRetriever, args: argparse.Namespace) -> int:
@@ -1413,6 +1426,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Locally operated Gmail and Calendar integration with least-privilege security bounds and manual gates on every write.",
     )
     subparsers = parser.add_subparsers(dest="subcommand", help="Available commands")
+    parser.add_argument(
+        "--account",
+        dest="account_before",
+        default=None,
+        metavar="ADDRESS",
+        help="Google account to act as (default: GMAIL_ACCOUNT, then ~/.config/gmail-local/account.txt)",
+    )
 
     # status
     p_status = subparsers.add_parser("status", help="Check account and Keychain token status")
@@ -1715,7 +1735,37 @@ def build_parser() -> argparse.ArgumentParser:
     p_labels.add_argument("--purpose", default="list_labels", help="Operator-stated purpose for audit log")
     p_labels.set_defaults(func=cmd_labels)
 
+    _accept_account_after_subcommand(parser)
     return parser
+
+
+def _accept_account_after_subcommand(parser: argparse.ArgumentParser) -> None:
+    """Lets --account also follow any subcommand, e.g. `gmail-local search q --account x`."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for sub_parser in {id(p): p for p in action.choices.values()}.values():
+                sub_parser.add_argument(
+                    "--account",
+                    dest="account_after",
+                    default=argparse.SUPPRESS,
+                    metavar="ADDRESS",
+                    help="Google account to act as",
+                )
+                _accept_account_after_subcommand(sub_parser)
+
+
+def _select_account(args: argparse.Namespace) -> str:
+    """Resolves the account for this invocation; raises ValueError on conflicting or blank flags."""
+    before = args.account_before
+    after = getattr(args, "account_after", None)
+    if before is not None and after is not None and not same_account(before, after):
+        raise ValueError(f"--account was given twice with different values: '{before}' and '{after}'.")
+    flag = before if before is not None else after
+    if flag is None:
+        return DEFAULT_ACCOUNT
+    account = resolve_account(flag)
+    # Keep the default's Keychain label spelling when the flag names the default account.
+    return DEFAULT_ACCOUNT if same_account(account, DEFAULT_ACCOUNT) else account
 
 
 def main(argv: List[str] = None) -> int:
@@ -1725,7 +1775,22 @@ def main(argv: List[str] = None) -> int:
         parser.print_help()
         return 0
 
-    retriever = GmailRetriever()
+    try:
+        account = _select_account(args)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    if args.subcommand not in ACCOUNT_SELECTABLE_COMMANDS and account != DEFAULT_ACCOUNT:
+        print(
+            f"Error: '{args.subcommand}' cannot use --account {account} yet; it would act as the default "
+            f"account {DEFAULT_ACCOUNT}. Only read-only retrieval commands select another account "
+            "until phase 2 of issue #18.",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"account: {account}", file=sys.stderr)
+    retriever = GmailRetriever(account=account)
     return args.func(retriever, args)
 
 

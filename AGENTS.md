@@ -21,7 +21,7 @@ the issue tracker are all named `gmail-local`
   and the CLI reference; `gmail-local --help` is the authoritative command list.
 - Read `docs/architecture_diagram.md` for how the five grants, the three manual
   gates, and the retrieval, triage, cleanup, and calendar paths fit together.
-- Read `docs/adr/` for the numbered decisions (0001-0014, 0016) cited throughout this file.
+- Read `docs/adr/` for the numbered decisions (0001-0014, 0016, 0017) cited throughout this file.
 - Read `docs/agent-cookbook.md` before executing retrieval tasks. It documents
   Gmail search syntax, PST date evaluation, MIME multipart handling, and the
   3-stage retrieval workflow.

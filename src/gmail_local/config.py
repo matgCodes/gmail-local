@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Mapping, Optional
 
 # Scopes: Strict least-privilege retrieval only
 RETRIEVAL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -28,11 +29,22 @@ CLIENT_SECRET_MEET_FILE = CONFIG_DIR / "client_secret_meet.json"
 CLIENT_SECRET_AVAILABILITY_FILE = CONFIG_DIR / "client_secret_availability.json"
 
 
-def _resolve_default_account() -> str:
-    """Resolves active Gmail account from environment or local config, avoiding committed PII."""
-    if "GMAIL_ACCOUNT" in os.environ:
-        return os.environ["GMAIL_ACCOUNT"]
-    account_file = CONFIG_DIR / "account.txt"
+ACCOUNT_FILE = CONFIG_DIR / "account.txt"
+PLACEHOLDER_ACCOUNT = "user@example.com"
+
+
+def resolve_account(
+    flag: Optional[str] = None,
+    environ: Mapping[str, str] = os.environ,
+    account_file: Path = ACCOUNT_FILE,
+) -> str:
+    """Resolves the active account: --account, then GMAIL_ACCOUNT, then account.txt (ADR 0017)."""
+    if flag is not None:
+        if not flag.strip():
+            raise ValueError("--account must be a non-empty email address.")
+        return flag.strip()
+    if "GMAIL_ACCOUNT" in environ:
+        return environ["GMAIL_ACCOUNT"]
     if account_file.exists():
         try:
             val = account_file.read_text(encoding="utf-8").strip()
@@ -40,7 +52,12 @@ def _resolve_default_account() -> str:
                 return val
         except OSError:
             pass
-    return "user@example.com"
+    return PLACEHOLDER_ACCOUNT
+
+
+def same_account(a: str, b: str) -> bool:
+    """Email addresses compare case-insensitively; Keychain labels keep their original case."""
+    return a.strip().casefold() == b.strip().casefold()
 
 
 # Keychain Identifiers
@@ -49,7 +66,7 @@ KEYCHAIN_SERVICE_TRANSMISSION = "gmail-local-transmission"
 KEYCHAIN_SERVICE_MODIFY = "gmail-local-modify"
 KEYCHAIN_SERVICE_CALENDAR = "gmail-local-calendar"
 KEYCHAIN_SERVICE_AVAILABILITY = "gmail-local-availability"
-DEFAULT_ACCOUNT = _resolve_default_account()
+DEFAULT_ACCOUNT = resolve_account()
 
 STATE_DIR = Path.home() / ".local" / "state" / "gmail-local"
 DRAFTS_DIR = STATE_DIR / "drafts"

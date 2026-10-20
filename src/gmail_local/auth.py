@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import keyring
 from google.auth.transport.requests import Request
@@ -25,8 +25,10 @@ from gmail_local.config import (
     KEYCHAIN_SERVICE_MODIFY,
     KEYCHAIN_SERVICE_TRANSMISSION,
     MODIFY_SCOPE,
+    PLACEHOLDER_ACCOUNT,
     RETRIEVAL_SCOPE,
     TRANSMISSION_SCOPE,
+    same_account,
 )
 
 
@@ -50,6 +52,31 @@ class ScopeMismatchError(AuthError):
     """Raised when Google grants scopes other than exactly the requested ones (ADR 0016)."""
 
 
+class IdentityMismatchError(AuthError):
+    """Raised when the consented Google account differs from the requested account (ADR 0017)."""
+
+
+def gmail_profile_address(creds: Credentials) -> str:
+    """Returns the mailbox address a Gmail token opens, via users.getProfile (no message content)."""
+    from googleapiclient.discovery import build
+
+    service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+    return service.users().getProfile(userId="me").execute()["emailAddress"]
+
+
+def _revoke_token(token: str) -> bool:
+    """Revokes a token with Google; returns True when Google confirms."""
+    import requests
+
+    resp = requests.post(
+        "https://oauth2.googleapis.com/revoke",
+        params={"token": token},
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        timeout=10,
+    )
+    return resp.status_code == 200
+
+
 class AuthManager:
     """Manages Desktop OAuth authorization flow and Keychain credential storage."""
 
@@ -61,6 +88,7 @@ class AuthManager:
         keyring_backend: Any = keyring,
         scopes: Optional[List[str]] = None,
         verify_granted_scopes: bool = False,
+        identity_resolver: Optional[Callable[[Credentials], str]] = None,
     ):
         self.client_secret_path = client_secret_path
         self.keychain_service = keychain_service
@@ -68,6 +96,7 @@ class AuthManager:
         self.keyring = keyring_backend
         self.scopes = scopes if scopes is not None else [RETRIEVAL_SCOPE]
         self.verify_granted_scopes = verify_granted_scopes
+        self.identity_resolver = identity_resolver
 
     @classmethod
     def for_retrieval(
@@ -84,6 +113,7 @@ class AuthManager:
             account=account,
             keyring_backend=keyring_backend,
             scopes=[RETRIEVAL_SCOPE],
+            identity_resolver=gmail_profile_address,
         )
 
     @classmethod
@@ -207,12 +237,14 @@ class AuthManager:
             autogenerate_code_verifier=True,  # Enforces PKCE S256
         )
 
+        hint = {} if self.account == PLACEHOLDER_ACCOUNT else {"login_hint": self.account}
         try:
             creds = flow.run_local_server(
                 port=0,
                 open_browser=open_browser,
                 prompt="consent",
                 access_type="offline",
+                **hint,
             )
         except Warning as w:
             # oauthlib aborts the token exchange with a bare Warning when the returned
@@ -230,6 +262,9 @@ class AuthManager:
                 "'access_type=offline' were granted."
             )
 
+        if self.identity_resolver is not None:
+            self._verify_identity(creds)
+
         # Store refresh token securely in OS Keychain
         self.keyring.set_password(
             self.keychain_service,
@@ -237,6 +272,43 @@ class AuthManager:
             creds.refresh_token,
         )
         return self.account
+
+    def _verify_identity(self, creds: Credentials) -> None:
+        """Refuses a token whose mailbox differs from self.account; the token is revoked, never stored."""
+        try:
+            mailbox = self.identity_resolver(creds)
+        except Exception as e:
+            self._discard(creds.refresh_token)
+            raise AuthError(
+                f"Could not confirm which Google account was signed in ({type(e).__name__}); "
+                f"nothing was stored in Keychain service '{self.keychain_service}'. Retry the login."
+            ) from None
+        if same_account(mailbox, self.account):
+            return
+        revoked = self._discard(creds.refresh_token)
+        outcome = (
+            "The new token was revoked"
+            if revoked
+            else "The new token could not be revoked; remove this app at https://myaccount.google.com/permissions"
+        )
+        raise IdentityMismatchError(
+            f"Google signed in as '{mailbox}', but this login was for account '{self.account}'.\n"
+            f"{outcome}, and nothing was stored in Keychain service '{self.keychain_service}'.\n"
+            f"Retry and pick '{self.account}' in the browser, or run "
+            f"'gmail-local --account {mailbox} login' if that is the account you meant."
+            + (
+                "\nNo account is configured; put your address in ~/.config/gmail-local/account.txt."
+                if self.account == PLACEHOLDER_ACCOUNT
+                else ""
+            )
+        )
+
+    @staticmethod
+    def _discard(token: str) -> bool:
+        try:
+            return _revoke_token(token)
+        except Exception:
+            return False
 
     def get_credentials(self) -> Credentials:
         """Retrieves refresh token from Keychain and refreshes access token if needed."""
@@ -274,12 +346,18 @@ class AuthManager:
         has_token = refresh_token is not None
 
         is_valid = False
+        mailbox = None
         if has_secret and has_token:
             try:
                 creds = self.get_credentials()
                 is_valid = creds.valid
             except Exception:
                 is_valid = False
+            if is_valid and self.identity_resolver is not None:
+                try:
+                    mailbox = self.identity_resolver(creds)
+                except Exception:
+                    mailbox = None
 
         scope_str = ", ".join(self.scopes) if len(self.scopes) > 1 else (self.scopes[0] if self.scopes else "")
         return {
@@ -289,22 +367,16 @@ class AuthManager:
             "has_keychain_token": has_token,
             "is_valid": is_valid,
             "scope": scope_str,
+            "mailbox": mailbox,
+            "mailbox_matches": None if mailbox is None else same_account(mailbox, self.account),
         }
 
     def revoke(self) -> bool:
         """Revokes token authorization with Google and deletes Keychain entry."""
-        import requests
-
         refresh_token = self.keyring.get_password(self.keychain_service, self.account)
         revoked_remotely = False
         if refresh_token:
-            resp = requests.post(
-                "https://oauth2.googleapis.com/revoke",
-                params={"token": refresh_token},
-                headers={"content-type": "application/x-www-form-urlencoded"},
-                timeout=10,
-            )
-            revoked_remotely = resp.status_code == 200
+            revoked_remotely = _revoke_token(refresh_token)
 
         try:
             self.keyring.delete_password(self.keychain_service, self.account)

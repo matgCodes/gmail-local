@@ -81,6 +81,24 @@ To connect to your personal Gmail account:
 
 ## CLI Usage
 
+### Selecting an Account (`--account`, ADR 0017)
+
+Every command acts as one Google account and prints it to stderr as `account: <address>`.
+Without `--account`, the default comes from `GMAIL_ACCOUNT`, then `~/.config/gmail-local/account.txt`.
+
+```bash
+# Default account
+gmail-local search "is:unread"
+
+# Another account; the flag may go before or after the subcommand
+gmail-local --account other@example.com login
+gmail-local search "is:unread" --account other@example.com
+```
+
+* `login` pre-selects the address on Google's consent screen. If you pick a different account, the new token is revoked and nothing is stored.
+* `status` shows the mailbox the token actually opens, and exits non-zero if it differs from the account.
+* Until phase 2 of issue #18, only read-only retrieval commands (`status`, `login`, `revoke`, `search`, `preview`, `read`, `attachments`, `download`, `history`, `thread`, `labels`) accept a non-default account. Other commands refuse one.
+
 ### Retrieval Operations (`gmail.readonly`)
 
 ```bash
