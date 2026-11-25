@@ -84,7 +84,8 @@ def cmd_status(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     print("=== Gmail Local Retrieval Status ===")
     print(f"Account:          {status['account']}")
     print(f"Keychain Service: {status['keychain_service']}")
-    print(f"Client Secret:    {'Found' if status['has_client_secret'] else 'Missing (~/.config/gmail-local/client_secret.json)'}")
+    secret_path = status.get("client_secret_path", "~/.config/gmail-local/client_secret.json")
+    print(f"Client Secret:    {'Found' if status['has_client_secret'] else 'Missing'} ({secret_path})")
     print(f"Keychain Token:   {'Present' if status['has_keychain_token'] else 'Not stored (run login)'}")
     print(f"Token Valid:      {'Yes (active & refreshable)' if status['is_valid'] else 'No'}")
     print(f"Scope:            {status['scope']}")
@@ -97,6 +98,7 @@ def cmd_status(retriever: GmailRetriever, args: argparse.Namespace) -> int:
 def cmd_login(retriever: GmailRetriever, args: argparse.Namespace) -> int:
     """Execute interactive OAuth login with PKCE in the system browser."""
     print("Initiating OAuth login flow with Google...")
+    print(f"OAuth client:     {retriever.auth.client_secret_path}")
     print("A browser window will open requesting consent for 'gmail.readonly'.")
     try:
         account = retriever.auth.run_interactive_login(open_browser=not args.no_browser)

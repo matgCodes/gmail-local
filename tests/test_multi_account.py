@@ -348,3 +348,83 @@ def test_status_lookup_failure_keeps_token_valid_and_mailbox_unknown(tmp_path: P
     assert status["is_valid"] is True
     assert status["mailbox"] is None
     assert status["mailbox_matches"] is None
+
+
+# --- phase 1b: per-account OAuth client -------------------------------------
+
+from gmail_local.config import client_secret_for
+
+
+def test_default_account_uses_top_level_client_file(tmp_path: Path):
+    top = tmp_path / "client_secret.json"
+    assert client_secret_for("me@example.com", top, "me@example.com", tmp_path / "accounts") == top
+
+
+def test_account_folder_wins_even_for_default_account(tmp_path: Path):
+    top = tmp_path / "client_secret.json"
+    folder_file = tmp_path / "accounts" / "me@example.com" / "client_secret.json"
+    folder_file.parent.mkdir(parents=True)
+    folder_file.write_text("{}")
+    assert client_secret_for("me@example.com", top, "me@example.com", tmp_path / "accounts") == folder_file
+
+
+def test_other_account_uses_its_own_folder(tmp_path: Path):
+    top = tmp_path / "client_secret.json"
+    top.write_text("{}")
+    folder_file = tmp_path / "accounts" / "client@example.com" / "client_secret.json"
+    folder_file.parent.mkdir(parents=True)
+    folder_file.write_text("{}")
+    assert client_secret_for("Client@Example.com", top, "me@example.com", tmp_path / "accounts") == folder_file
+
+
+def test_other_account_never_falls_back_to_top_level_file(tmp_path: Path):
+    top = tmp_path / "client_secret.json"
+    top.write_text("{}")
+    expected = tmp_path / "accounts" / "client@example.com" / "client_secret.json"
+    assert client_secret_for("client@example.com", top, "me@example.com", tmp_path / "accounts") == expected
+
+
+def test_missing_per_account_file_error_names_the_folder_path(tmp_path: Path):
+    from gmail_local.auth import MissingClientSecretError
+
+    expected = tmp_path / "accounts" / "client@example.com" / "client_secret.json"
+    manager = AuthManager.for_retrieval(client_secret_path=expected, account="client@example.com")
+    with pytest.raises(MissingClientSecretError) as excinfo:
+        manager.load_client_config()
+    assert str(expected) in str(excinfo.value)
+
+
+def test_for_retrieval_resolves_per_account_client_file(tmp_path: Path):
+    folder_file = tmp_path / "accounts" / "client@example.com" / "client_secret.json"
+    with patch("gmail_local.auth.ACCOUNTS_DIR", tmp_path / "accounts"):
+        manager = AuthManager.for_retrieval(account="client@example.com")
+    assert manager.client_secret_path == folder_file
+
+
+def test_status_reports_client_file_path(tmp_path: Path):
+    status = _status_manager(tmp_path, "new@example.com").get_status()
+    assert status["client_secret_path"] == str(tmp_path / "client_secret.json")
+
+
+@patch("gmail_local.cli.GmailRetriever")
+def test_cli_status_prints_client_file_path(mock_retriever_cls, capsys):
+    mock_retriever_cls.return_value.auth.get_status.return_value = {
+        "account": "client@example.com",
+        "keychain_service": "gmail-local-retrieval",
+        "has_client_secret": False,
+        "client_secret_path": "/x/accounts/client@example.com/client_secret.json",
+        "has_keychain_token": False,
+        "is_valid": False,
+        "scope": "https://www.googleapis.com/auth/gmail.readonly",
+    }
+    main(["--account", "client@example.com", "status"])
+    assert "Client Secret:    Missing (/x/accounts/client@example.com/client_secret.json)" in capsys.readouterr().out
+
+
+@patch("gmail_local.cli.GmailRetriever")
+def test_cli_login_prints_client_file_in_use(mock_retriever_cls, capsys):
+    retriever = mock_retriever_cls.return_value
+    retriever.auth.client_secret_path = Path("/x/accounts/client@example.com/client_secret.json")
+    retriever.auth.run_interactive_login.return_value = "client@example.com"
+    assert main(["--account", "client@example.com", "login", "--no-browser"]) == 0
+    assert "OAuth client:     /x/accounts/client@example.com/client_secret.json" in capsys.readouterr().out

@@ -30,6 +30,7 @@ CLIENT_SECRET_AVAILABILITY_FILE = CONFIG_DIR / "client_secret_availability.json"
 
 
 ACCOUNT_FILE = CONFIG_DIR / "account.txt"
+ACCOUNTS_DIR = CONFIG_DIR / "accounts"
 PLACEHOLDER_ACCOUNT = "user@example.com"
 
 
@@ -58,6 +59,15 @@ def resolve_account(
 def same_account(a: str, b: str) -> bool:
     """Email addresses compare case-insensitively; Keychain labels keep their original case."""
     return a.strip().casefold() == b.strip().casefold()
+
+
+def client_secret_for(account: str, top_level: Path, default_account: str, accounts_dir: Path = ACCOUNTS_DIR) -> Path:
+    """Picks an account's OAuth client file: its own folder always wins; top-level files serve only
+    the default account. Another account never falls back to the default's client (ADR 0017)."""
+    own = accounts_dir / account.strip().casefold() / top_level.name
+    if own.exists() or not same_account(account, default_account):
+        return own
+    return top_level
 
 
 # Keychain Identifiers

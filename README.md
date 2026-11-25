@@ -97,6 +97,7 @@ gmail-local search "is:unread" --account other@example.com
 
 * `login` pre-selects the address on Google's consent screen. If you pick a different account, the new token is revoked and nothing is stored.
 * `status` shows the mailbox the token actually opens, and exits non-zero if it differs from the account.
+* Each account can use its own Google Cloud project. Put that account's Desktop client JSON at `~/.config/gmail-local/accounts/<address>/client_secret.json` (folder `0700`, file `0600`). An account's folder always wins. The top-level `client_secret.json` serves only the default account, and another account without its own file fails instead of using yours. `login` and `status` print the client file in use.
 * Until phase 2 of issue #18, only read-only retrieval commands (`status`, `login`, `revoke`, `search`, `preview`, `read`, `attachments`, `download`, `history`, `thread`, `labels`) accept a non-default account. Other commands refuse one.
 
 ### Retrieval Operations (`gmail.readonly`)
