@@ -39,7 +39,13 @@ The Operator is adding a second Google account (issue #18). Before this decision
 
 7. **Phase 1 Guard:** until phase 2 of issue #18, only the read-only retrieval commands (`status`, `login`, `revoke`, `search`, `preview`, `read`, `attachments`, `download`, `history`, `thread`, `labels`) accept a non-default `--account`. Every other command refuses one (exit 2) instead of silently acting as the default account.
 
-8. **Unchanged:** scopes, Keychain service names, client secret files, and the state directory layout. Tokens for different accounts already coexist, because the Keychain keys them by service and account label.
+8. **Per-Account OAuth Client (phase 1b):**
+   - An account may use its own Google Cloud project. Its Desktop client files live in `~/.config/gmail-local/accounts/<address>/`, with the same file names as the top level. The folder name is the lowercased address.
+   - That folder always wins. The top-level files serve only the default account. Any other account must have its own file. A missing file fails with the expected path and never falls back to the default account's client, so one account's access never runs through another's project.
+   - `login` and `status` print the client file in use.
+   - Phase 1b covers the Retrieval Grant. Phase 2 applies the same layout to the write grants.
+
+9. **Unchanged:** scopes, Keychain service names, the default account's client files, and the state directory layout. Tokens for different accounts already coexist, because the Keychain keys them by service and account label.
 
 ## Deferred to Phase 2 (issue #18)
 - Recording the account in `FrozenDraft`, `CleanupPlan`, triage reports, and staged calendar events, and refusing to send or execute when it doesn't match.

@@ -10,6 +10,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from gmail_local.config import (
+    ACCOUNTS_DIR,
     AVAILABILITY_SCOPE,
     CALENDAR_SCOPE,
     CLIENT_SECRET_AVAILABILITY_FILE,
@@ -28,6 +29,7 @@ from gmail_local.config import (
     PLACEHOLDER_ACCOUNT,
     RETRIEVAL_SCOPE,
     TRANSMISSION_SCOPE,
+    client_secret_for,
     same_account,
 )
 
@@ -101,12 +103,14 @@ class AuthManager:
     @classmethod
     def for_retrieval(
         cls,
-        client_secret_path: Path = CLIENT_SECRET_FILE,
+        client_secret_path: Optional[Path] = None,
         keychain_service: str = KEYCHAIN_SERVICE,
         account: str = DEFAULT_ACCOUNT,
         keyring_backend: Any = keyring,
     ) -> "AuthManager":
         """Factory creating an AuthManager bound to the read-only Retrieval Grant."""
+        if client_secret_path is None:
+            client_secret_path = client_secret_for(account, CLIENT_SECRET_FILE, DEFAULT_ACCOUNT, ACCOUNTS_DIR)
         return cls(
             client_secret_path=client_secret_path,
             keychain_service=keychain_service,
@@ -364,6 +368,7 @@ class AuthManager:
             "account": self.account,
             "keychain_service": self.keychain_service,
             "has_client_secret": has_secret,
+            "client_secret_path": str(self.client_secret_path),
             "has_keychain_token": has_token,
             "is_valid": is_valid,
             "scope": scope_str,
